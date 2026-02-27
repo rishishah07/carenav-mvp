@@ -564,13 +564,38 @@ def _card(title: str, value: str, subtitle: str = "", tone: str = "") -> None:
 
 
 def _get_api_key() -> str:
-    secrets_key = ""
+    def _clean(value: Any) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip().strip('"').strip("'")
+        return text
+
+    # 1) Environment variables
+    for env_name in ["OPENAI_API_KEY", "OPENAI_KEY"]:
+        env_val = _clean(os.getenv(env_name, ""))
+        if env_val:
+            return env_val
+
+    # 2) Streamlit secrets (supports multiple common layouts)
     try:
-        secrets_key = st.secrets.get("OPENAI_API_KEY", "")
+        # Flat keys
+        for key in ["OPENAI_API_KEY", "openai_api_key", "OPENAI_KEY", "openai_key"]:
+            val = _clean(st.secrets.get(key, ""))
+            if val:
+                return val
+
+        # Nested blocks, e.g. [openai] api_key="..."
+        for section in ["openai", "OPENAI"]:
+            block = st.secrets.get(section, {})
+            if hasattr(block, "get"):
+                for key in ["api_key", "API_KEY", "openai_api_key", "OPENAI_API_KEY"]:
+                    val = _clean(block.get(key, ""))
+                    if val:
+                        return val
     except Exception:
-        secrets_key = ""
-    env_key = os.getenv("OPENAI_API_KEY", "")
-    return secrets_key or env_key
+        return ""
+
+    return ""
 
 
 def _format_prefill_value(metric: str, value: float | None) -> str:
@@ -743,10 +768,13 @@ def main() -> None:
         )
         custom_model = st.text_input("Custom model", placeholder="e.g. gpt-5")
         ai_model = _clean_text(custom_model) or model_preset
-        if _get_api_key():
+        detected_key = _get_api_key()
+        if detected_key:
             st.caption("OpenAI key detected.")
         else:
             st.caption("Set `OPENAI_API_KEY` or `.streamlit/secrets.toml` to enable ChatGPT analysis.")
+            with st.expander("API key setup example"):
+                st.code('OPENAI_API_KEY = "sk-..."', language="toml")
 
         st.divider()
         st.subheader("Wearable / Device Data")
