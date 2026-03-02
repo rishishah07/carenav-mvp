@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover - optional dependency at runtime
     OpenAI = None
 
 
-st.set_page_config(page_title="CareNav", page_icon="🩺", layout="wide")
+st.set_page_config(page_title="CareNav", page_icon="🩺", layout="wide", initial_sidebar_state="collapsed")
 
 
 def _inject_styles() -> None:
@@ -37,6 +37,20 @@ def _inject_styles() -> None:
         }
         [data-testid="stHeader"] {
             background: transparent;
+        }
+        [data-testid="collapsedControl"] {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.18);
+            border-radius: 999px;
+            color: #f8fafc;
+            box-shadow: 0 8px 24px rgba(2, 6, 23, 0.35);
+        }
+        [data-testid="collapsedControl"]:hover {
+            background: rgba(255,255,255,0.14);
+            border-color: rgba(255,255,255,0.28);
+        }
+        [data-testid="collapsedControl"] svg {
+            fill: #f8fafc;
         }
         [data-testid="stSidebar"] {
             background: #0b1324;
@@ -65,6 +79,7 @@ def _inject_styles() -> None:
             box-shadow: 0 10px 36px rgba(2, 6, 23, 0.45);
             position: relative;
             overflow: hidden;
+            min-height: 152px;
         }
         .carenav-hero::before {
             content: "";
@@ -79,11 +94,45 @@ def _inject_styles() -> None:
             font-weight: 680;
             letter-spacing: -0.02em;
         }
+        .hero-kicker {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(56, 189, 248, 0.10);
+            border: 1px solid rgba(56, 189, 248, 0.18);
+            color: #bae6fd;
+            font-size: 0.82rem;
+            font-weight: 650;
+            letter-spacing: 0.01em;
+            position: relative;
+            z-index: 2;
+        }
+        .hero-mark {
+            position: absolute;
+            right: 22px;
+            top: 22px;
+            width: 58px;
+            height: 58px;
+            border-radius: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, rgba(37, 99, 235, 0.24), rgba(16, 185, 129, 0.18));
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            color: #e0f2fe;
+            font-size: 1.9rem;
+            font-weight: 700;
+            box-shadow: 0 10px 24px rgba(2, 6, 23, 0.36);
+            z-index: 2;
+        }
         .carenav-hero p {
             margin: 7px 0 0 0;
             color: #cbd5e1;
             font-size: 0.96rem;
-            max-width: 54rem;
+            max-width: 48rem;
         }
         .mini-card {
             background: rgba(15,23,42,0.78);
@@ -160,6 +209,18 @@ def _inject_styles() -> None:
             margin-top: 6px;
             margin-bottom: 10px;
             box-shadow: 0 6px 18px rgba(2, 6, 23, 0.34);
+        }
+        .soft-panel {
+            background: rgba(15,23,42,0.62);
+            border: 1px solid rgba(148, 163, 184, 0.14);
+            border-radius: 18px;
+            padding: 12px 14px;
+            box-shadow: 0 6px 20px rgba(2, 6, 23, 0.28);
+        }
+        .ai-search-title {
+            color: #dbeafe;
+            font-weight: 650;
+            margin-bottom: 0.15rem;
         }
         </style>
         """,
@@ -456,12 +517,74 @@ def _generate_ai_mitigation_actions(
     return []
 
 
+def _generate_ai_search_answer(
+    api_key: str,
+    model: str,
+    payload: dict[str, Any],
+    question: str,
+) -> str:
+    if not api_key:
+        raise ValueError("Missing OpenAI API key.")
+    if OpenAI is None:
+        raise RuntimeError("The `openai` package is not installed. Install dependencies from requirements.txt.")
+    cleaned_question = _clean_text(question)
+    if not cleaned_question:
+        raise ValueError("Question is empty.")
+
+    client = OpenAI(api_key=api_key)
+    system_prompt = (
+        "You are CareNav's interactive health education assistant. "
+        "Answer the user's question using the CareNav structured data first, then general health education context if helpful. "
+        "Keep the answer concise, practical, and easy to understand. "
+        "Do not diagnose, do not claim certainty, and do not invent measurements or history. "
+        "If the question goes beyond the available data, say that clearly. "
+        "Format: one short paragraph, then up to 3 bullets if useful."
+    )
+    user_prompt = (
+        "User question:\n"
+        + cleaned_question
+        + "\n\nCareNav structured data:\n"
+        + json.dumps(payload, indent=2)
+    )
+
+    try:
+        if hasattr(client, "responses"):
+            response = client.responses.create(
+                model=model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+            text = _extract_response_text(response)
+            if text:
+                return text
+
+        chat = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        content = chat.choices[0].message.content if chat.choices else ""
+        return (content or "").strip()
+    except Exception as exc:  # pragma: no cover - network/runtime path
+        raise RuntimeError(str(exc)) from exc
+
+
 def _normalize_no_selection(values: list[str], none_label: str) -> list[str]:
     if not values:
         return []
     if none_label in values:
         return []
     return [v for v in values if v != none_label]
+
+
+def _prime_ai_search(question: str, auto_run: bool = False) -> None:
+    st.session_state["ai_search_question"] = question
+    if auto_run:
+        st.session_state["carenav_ai_search_auto_run"] = True
 
 
 def _build_trend_view(
@@ -525,11 +648,6 @@ def _build_priority_actions(risks: list[Any], alerts: list[str]) -> list[str]:
                     "Prioritize sleep consistency and stress management to lower physiologic strain.",
                 ]
             )
-        for step in top.next_steps:
-            if step not in actions:
-                actions.append(step)
-            if len(actions) >= 5:
-                break
 
     deduped: list[str] = []
     for item in actions:
@@ -601,7 +719,7 @@ def _get_api_key() -> str:
 def _format_prefill_value(metric: str, value: float | None) -> str:
     if value is None:
         return ""
-    if metric in {"steps", "systolic_bp", "diastolic_bp", "resting_hr", "hrv", "glucose_fasting", "spo2"}:
+    if metric in {"steps", "resting_hr", "hrv", "spo2"}:
         return str(int(round(value)))
     return f"{float(value):.1f}"
 
@@ -625,14 +743,11 @@ def _prefill_form_from_summary(summary: dict[str, Any] | None) -> list[str]:
     features = summary.get("features", {})
     widget_map = {
         "weight_kg": "weight_text",
-        "systolic_bp": "systolic_bp_text",
-        "diastolic_bp": "diastolic_bp_text",
         "resting_hr": "resting_hr_text",
         "hrv": "hrv_text",
         "spo2": "spo2_text",
         "sleep_hours": "sleep_hours_text",
         "steps": "steps_text",
-        "glucose_fasting": "glucose_fasting_text",
         "temperature_f": "temp_f_text",
     }
     filled: list[str] = []
@@ -694,22 +809,21 @@ def _run_analysis(
     ai_error = None
     ai_actions: list[str] = []
     ai_actions_error = None
-    payload: dict[str, Any] | None = None
+    payload: dict[str, Any] = _build_ai_payload(
+        profile,
+        manual_inputs,
+        summary,
+        risks,
+        positives,
+        gaps,
+        alerts,
+        symptoms,
+        conditions,
+        main_concern,
+    )
     if ai_enabled:
         api_key = _get_api_key()
         if api_key:
-            payload = _build_ai_payload(
-                profile,
-                manual_inputs,
-                summary,
-                risks,
-                positives,
-                gaps,
-                alerts,
-                symptoms,
-                conditions,
-                main_concern,
-            )
             try:
                 ai_text = _generate_ai_narrative(api_key=api_key, model=ai_model, payload=payload)
             except Exception as exc:
@@ -741,6 +855,7 @@ def _run_analysis(
         "summary_text": summary_text,
         "main_concern": main_concern,
         "ai_model": ai_model,
+        "ai_payload": payload,
     }
 
 
@@ -750,6 +865,8 @@ def main() -> None:
     st.markdown(
         """
         <div class="carenav-hero">
+          <div class="hero-mark">✦</div>
+          <div class="hero-kicker">✦ Predictive Care Navigator</div>
           <h1>CareNav</h1>
           <p>CareNav helps make care more predictive by spotting early warning signals from current readings and wearable trends, then translating them into clear risks, likely drivers, and next steps before issues escalate.</p>
         </div>
@@ -758,15 +875,16 @@ def main() -> None:
     )
 
     with st.sidebar:
-        st.subheader("AI Analysis")
+        st.markdown("### AI Settings")
         ai_enabled = st.toggle("Use ChatGPT analysis", value=True)
         model_preset = st.selectbox(
             "Model",
-            ["gpt-5", "gpt-5-mini", "gpt-4.1-mini", "gpt-4.1"],
+            ["gpt-5.2", "gpt-5.2-chat-latest", "gpt-5.2-pro", "gpt-5", "gpt-5-mini", "gpt-5.3-codex", "gpt-4.1-mini", "gpt-4.1"],
             index=0,
             help="Pick a model your account can access.",
+            key="model_select_sidebar",
         )
-        custom_model = st.text_input("Custom model", placeholder="e.g. gpt-5")
+        custom_model = st.text_input("Custom model", placeholder="e.g. gpt-5.2", key="custom_model_sidebar")
         ai_model = _clean_text(custom_model) or model_preset
         detected_key = _get_api_key()
         if detected_key:
@@ -775,9 +893,15 @@ def main() -> None:
             st.caption("Set `OPENAI_API_KEY` or `.streamlit/secrets.toml` to enable ChatGPT analysis.")
             with st.expander("API key setup example"):
                 st.code('OPENAI_API_KEY = "sk-..."', language="toml")
+        st.markdown("### AI Output")
+        st.caption("CareNav uses ChatGPT for a short explanation and mitigation guidance after the risk engine scores the data.")
 
-        st.divider()
-        st.subheader("Wearable / Device Data")
+    st.markdown("### Inputs")
+    st.caption("Start with what you know. Add wearable data if available.")
+
+    input_col, wearable_col = st.columns([1.55, 0.95], gap="large")
+    with wearable_col:
+        st.markdown("### Wearable Data")
         uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
         st.download_button(
             "Sample CSV template",
@@ -787,130 +911,134 @@ def main() -> None:
         )
         with st.expander("Supported columns"):
             st.code(", ".join(["date", *NUMERIC_COLUMNS]), language="text")
-            st.caption("CareNav also auto-maps many Apple Health / WHOOP-style column names and long-format `date/type/value` exports.")
+            st.caption("CareNav auto-maps many Apple Health and WHOOP-style CSV formats, including long-format exports.")
 
     upload_preview_df, upload_preview_summary, upload_preview_error = _preview_upload(uploaded_file)
     prefilled_metrics = _prefill_form_from_summary(upload_preview_summary)
 
-    st.markdown("### Inputs")
-    st.caption("All fields are optional. Leave blanks for anything you do not know.")
-    if upload_preview_error:
-        st.warning(f"CSV preview could not be parsed yet: {upload_preview_error}")
-    elif upload_preview_summary and prefilled_metrics:
-        pretty = ", ".join(m.replace("_", " ") for m in prefilled_metrics[:6])
-        extra = "" if len(prefilled_metrics) <= 6 else f" +{len(prefilled_metrics) - 6} more"
-        st.markdown(
-            f'<div class="subtle-note">CSV parsed and prefilled blank fields from latest readings: {pretty}{extra}.</div>',
-            unsafe_allow_html=True,
-        )
-    if upload_preview_summary and upload_preview_summary.get("features"):
-        preview_rows = []
-        feature_order = ["resting_hr", "hrv", "sleep_hours", "steps", "spo2", "systolic_bp", "diastolic_bp", "weight_kg", "glucose_fasting", "temperature_f"]
-        for metric in feature_order:
-            item = upload_preview_summary.get("features", {}).get(metric)
-            if not item or item.get("latest") is None:
-                continue
-            preview_rows.append(
-                {
-                    "Metric": metric.replace("_", " "),
-                    "Latest": round(float(item["latest"]), 2),
-                    "7d avg": None if item.get("avg7") is None else round(float(item["avg7"]), 2),
-                    "Records": item.get("count"),
-                }
+    with wearable_col:
+        if upload_preview_error:
+            st.warning(f"CSV preview could not be parsed yet: {upload_preview_error}")
+        elif upload_preview_summary and prefilled_metrics:
+            pretty = ", ".join(m.replace("_", " ") for m in prefilled_metrics[:6])
+            extra = "" if len(prefilled_metrics) <= 6 else f" +{len(prefilled_metrics) - 6} more"
+            st.markdown(
+                f'<div class="subtle-note">CSV parsed and prefilled blank fields from latest readings: {pretty}{extra}.</div>',
+                unsafe_allow_html=True,
             )
-        if preview_rows:
-            st.markdown('<div class="csv-preview-card">', unsafe_allow_html=True)
-            st.markdown("**Detected from CSV**")
-            st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True, height=min(300, 45 + len(preview_rows) * 35))
-            st.markdown("</div>", unsafe_allow_html=True)
+        if upload_preview_summary and upload_preview_summary.get("features"):
+            preview_rows = []
+            feature_order = ["resting_hr", "hrv", "sleep_hours", "steps", "spo2", "weight_kg", "temperature_f"]
+            for metric in feature_order:
+                item = upload_preview_summary.get("features", {}).get(metric)
+                if not item or item.get("latest") is None:
+                    continue
+                preview_rows.append(
+                    {
+                        "Metric": metric.replace("_", " "),
+                        "Latest": round(float(item["latest"]), 2),
+                        "7d avg": None if item.get("avg7") is None else round(float(item["avg7"]), 2),
+                        "Records": item.get("count"),
+                    }
+                )
+            if preview_rows:
+                st.markdown('<div class="csv-preview-card">', unsafe_allow_html=True)
+                st.markdown("**Detected from CSV**")
+                st.dataframe(
+                    pd.DataFrame(preview_rows),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(300, 45 + len(preview_rows) * 35),
+                )
+                st.markdown("</div>", unsafe_allow_html=True)
 
-    with st.form("carenav_form", clear_on_submit=False):
-        p1, p2, p3 = st.columns(3)
-        with p1:
-            age_text = st.text_input("Age", placeholder="e.g. 42", key="age_text")
-            height_text = st.text_input("Height cm", placeholder="e.g. 170", key="height_text")
-            sex = st.selectbox("Sex", ["Female", "Male", "Other / Prefer not to say"], index=None, key="sex_select")
-        with p2:
-            weight_text = st.text_input("Weight kg", placeholder="e.g. 72.5", key="weight_text")
-            smoking_status = st.selectbox("Smoking status", ["Never", "Former", "Current"], index=None, key="smoking_status_select")
-            main_concern_choices = st.multiselect(
-                "Main concerns today",
-                [
-                    "No concerns",
-                    "High blood pressure",
-                    "Poor sleep / recovery",
-                    "Fatigue / low energy",
-                    "Stress / burnout",
-                    "High resting heart rate",
-                    "Low HRV",
-                    "Blood sugar concerns",
-                    "Breathing / oxygen concerns",
-                    "Weight gain / fluid retention",
-                    "Palpitations",
-                ],
-                default=[],
-                placeholder="Choose any that apply",
-                key="main_concern_choices",
-            )
-            main_concern_other = st.text_input("Other concern", placeholder="If not listed", key="main_concern_other")
-        with p3:
-            conditions = st.multiselect(
-                "Known conditions",
-                [
-                    "Hypertension",
-                    "Prediabetes",
-                    "Diabetes",
-                    "Heart failure",
-                    "Coronary artery disease",
-                    "Asthma",
-                    "COPD",
-                    "Kidney disease",
-                    "Sleep apnea",
-                ],
-                default=[],
-                placeholder="Select any that apply",
-                key="conditions_select",
-            )
-            symptoms = st.multiselect(
-                "Current symptoms",
-                [
-                    "No symptoms",
-                    "Chest pain",
-                    "Shortness of breath",
-                    "Cough",
-                    "Fever",
-                    "Fatigue",
-                    "Poor sleep",
-                    "Palpitations",
-                    "Leg swelling",
-                    "Dizziness",
-                    "Confusion",
-                ],
-                default=[],
-                placeholder="Select any that apply",
-                key="symptoms_select",
-            )
+    with input_col:
+        st.markdown('<div class="soft-panel">', unsafe_allow_html=True)
+        form = st.form("carenav_form", clear_on_submit=False)
+        with form:
+            p1, p2, p3 = st.columns(3)
+            with p1:
+                age_text = st.text_input("Age", placeholder="e.g. 42", key="age_text")
+                height_text = st.text_input("Height cm", placeholder="e.g. 170", key="height_text")
+                sex = st.selectbox("Sex", ["Female", "Male", "Other / Prefer not to say"], index=None, key="sex_select")
+            with p2:
+                weight_text = st.text_input("Weight kg", placeholder="e.g. 72.5", key="weight_text")
+                smoking_status = st.selectbox("Smoking status", ["Never", "Former", "Current"], index=None, key="smoking_status_select")
+                main_concern_choices = st.multiselect(
+                    "Main concerns today",
+                    [
+                        "No concerns",
+                        "High blood pressure",
+                        "Poor sleep / recovery",
+                        "Fatigue / low energy",
+                        "Stress / burnout",
+                        "High resting heart rate",
+                        "Low HRV",
+                        "Blood sugar concerns",
+                        "Breathing / oxygen concerns",
+                        "Weight gain / fluid retention",
+                        "Palpitations",
+                    ],
+                    default=[],
+                    placeholder="Choose any that apply",
+                    key="main_concern_choices",
+                )
+                main_concern_other = st.text_input("Other concern", placeholder="If not listed", key="main_concern_other")
+            with p3:
+                conditions = st.multiselect(
+                    "Known conditions",
+                    [
+                        "Hypertension",
+                        "Prediabetes",
+                        "Diabetes",
+                        "Heart failure",
+                        "Coronary artery disease",
+                        "Asthma",
+                        "COPD",
+                        "Kidney disease",
+                        "Sleep apnea",
+                    ],
+                    default=[],
+                    placeholder="Select any that apply",
+                    key="conditions_select",
+                )
+                symptoms = st.multiselect(
+                    "Current symptoms",
+                    [
+                        "No symptoms",
+                        "Chest pain",
+                        "Shortness of breath",
+                        "Cough",
+                        "Fever",
+                        "Fatigue",
+                        "Poor sleep",
+                        "Palpitations",
+                        "Leg swelling",
+                        "Dizziness",
+                        "Confusion",
+                    ],
+                    default=[],
+                    placeholder="Select any that apply",
+                    key="symptoms_select",
+                )
 
-        st.markdown("#### Current Measurements")
-        m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            systolic_bp_text = st.text_input("Systolic BP", placeholder="e.g. 124", key="systolic_bp_text")
-            diastolic_bp_text = st.text_input("Diastolic BP", placeholder="e.g. 79", key="diastolic_bp_text")
-            glucose_fasting_text = st.text_input("Fasting glucose (mg/dL)", placeholder="e.g. 95", key="glucose_fasting_text")
-        with m2:
-            resting_hr_text = st.text_input("Resting HR", placeholder="e.g. 62", key="resting_hr_text")
-            hrv_text = st.text_input("HRV (ms)", placeholder="e.g. 40", key="hrv_text")
-            spo2_text = st.text_input("SpO2 (%)", placeholder="e.g. 98", key="spo2_text")
-        with m3:
-            sleep_hours_text = st.text_input("Sleep hours", placeholder="e.g. 7.2", key="sleep_hours_text")
-            steps_text = st.text_input("Steps", placeholder="e.g. 6500", key="steps_text")
-            temp_f_text = st.text_input("Temperature F", placeholder="e.g. 98.6", key="temp_f_text")
-        with m4:
-            st.info(
-                "Fastest value: add BP, resting HR, sleep, and steps. CSV uploads can fill blanks automatically from wearable data."
-            )
+            st.markdown("#### Current Measurements")
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                resting_hr_text = st.text_input("Resting HR", placeholder="e.g. 62", key="resting_hr_text")
+                hrv_text = st.text_input("HRV (ms)", placeholder="e.g. 40", key="hrv_text")
+                spo2_text = st.text_input("SpO2 (%)", placeholder="e.g. 98", key="spo2_text")
+            with m2:
+                sleep_hours_text = st.text_input("Sleep hours", placeholder="e.g. 7.2", key="sleep_hours_text")
+                steps_text = st.text_input("Steps", placeholder="e.g. 6500", key="steps_text")
+                temp_f_text = st.text_input("Temperature F", placeholder="e.g. 98.6", key="temp_f_text")
+            with m3:
+                st.info(
+                    "Fastest value: add resting HR, sleep, steps, and HRV. CSV uploads can fill blanks automatically from wearable data."
+                )
 
-        submitted = st.form_submit_button("Run Analysis", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("Run AI-powered Analysis", type="primary", use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     if submitted:
         age = _parse_optional_int(age_text)
@@ -937,14 +1065,11 @@ def main() -> None:
             "smoking_status": smoking_status or "Unknown",
         }
         manual_inputs = {
-            "systolic_bp": _parse_optional_float(systolic_bp_text),
-            "diastolic_bp": _parse_optional_float(diastolic_bp_text),
             "resting_hr": _parse_optional_float(resting_hr_text),
             "hrv": _parse_optional_float(hrv_text),
             "spo2": _parse_optional_float(spo2_text),
             "sleep_hours": _parse_optional_float(sleep_hours_text),
             "steps": _parse_optional_float(steps_text),
-            "glucose_fasting": _parse_optional_float(glucose_fasting_text),
             "temperature_f": _parse_optional_float(temp_f_text),
             "weight_kg": weight_kg,
         }
@@ -961,7 +1086,7 @@ def main() -> None:
 
     result = st.session_state.get("carenav_result")
     if not result:
-        st.info("Add any values you know above and click `Run Analysis` to generate a prediction summary.")
+        st.info("Add any values you know above and click `Run AI-powered Analysis` to generate a prediction summary.")
         return
 
     summary = result["summary"]
@@ -977,6 +1102,7 @@ def main() -> None:
     ai_actions = result.get("ai_actions", [])
     ai_actions_error = result.get("ai_actions_error")
     summary_text = result["summary_text"]
+    ai_payload = result.get("ai_payload", {})
 
     if upload_error:
         st.warning(f"CSV upload could not be parsed: {upload_error}")
@@ -1006,15 +1132,78 @@ def main() -> None:
         st.info("ChatGPT key not configured. Showing local summary.")
     st.markdown(ai_text)
 
-    st.markdown("### Next Best Actions")
+    st.markdown("### Suggested Focus This Week")
     if ai_actions_error and _get_api_key():
-        st.caption("AI mitigation actions unavailable right now. Showing local fallback actions.")
+        st.caption("AI action guidance is unavailable right now. Showing local fallback suggestions.")
     actions = ai_actions if ai_actions else _build_priority_actions(risks, alerts)
     if actions:
         for i, action in enumerate(actions, start=1):
             st.write(f"{i}. {action}")
     else:
         st.write("1. Keep healthy routines consistent and rerun after new readings are available.")
+
+    with st.container(border=True):
+        st.markdown('<div class="ai-search-title">Ask CareNav AI</div>', unsafe_allow_html=True)
+        st.caption("Ask about your current results or use a quick prompt to learn more.")
+        q1, q2 = st.columns([1.35, 0.65])
+        with q1:
+            ai_question = st.text_input(
+                "Your question",
+                placeholder="e.g. Why is recovery risk high for me right now?",
+                key="ai_search_question",
+                label_visibility="collapsed",
+            )
+        with q2:
+            ask_clicked = st.button("✦ Ask AI", use_container_width=True, type="primary")
+
+        quick_q_cols = st.columns(3)
+        quick_questions = [
+            "What does my top risk mean?",
+            "What can I do this week to reduce this risk?",
+            "Which trend matters most right now?",
+        ]
+        for col, text in zip(quick_q_cols, quick_questions):
+            with col:
+                st.button(
+                    text,
+                    key=f"quick_q_{text}",
+                    use_container_width=True,
+                    on_click=_prime_ai_search,
+                    args=(text, True),
+                )
+
+    ask_clicked = ask_clicked or bool(st.session_state.pop("carenav_ai_search_auto_run", False))
+
+    if ask_clicked:
+        question_to_run = _clean_text(st.session_state.get("ai_search_question", ai_question))
+        if not question_to_run:
+            st.info("Enter a question first.")
+        elif not ai_enabled:
+            st.info("Enable ChatGPT analysis in the sidebar to use AI search.")
+        else:
+            api_key = _get_api_key()
+            if not api_key:
+                st.warning("No OpenAI API key detected. Add it in Streamlit secrets or env vars to use AI search.")
+            else:
+                with st.spinner("Asking CareNav AI..."):
+                    try:
+                        answer = _generate_ai_search_answer(
+                            api_key=api_key,
+                            model=result.get("ai_model", ai_model),
+                            payload=ai_payload,
+                            question=question_to_run,
+                        )
+                        st.session_state["carenav_ai_search_answer"] = answer
+                        st.session_state["carenav_ai_search_question_last"] = question_to_run
+                    except Exception as exc:
+                        st.error(f"AI search failed: {exc}")
+
+    search_answer = st.session_state.get("carenav_ai_search_answer")
+    search_question_last = st.session_state.get("carenav_ai_search_question_last")
+    if search_answer:
+        if search_question_last:
+            st.caption(f"Question: {search_question_last}")
+        st.markdown(search_answer)
 
     b1, b2 = st.columns([1.1, 1.0])
     with b1:
@@ -1025,18 +1214,11 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
     with b2:
-        st.markdown('<div class="section-title">Positive Signal</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Positive Behaviours</div>', unsafe_allow_html=True)
         if positives:
             st.success(positives[0])
         else:
             st.caption("No clear protective signal detected yet. Add more data over time.")
-
-    st.markdown("### Positive Behaviors")
-    if positives:
-        for p in positives[:4]:
-            st.success(p)
-    else:
-        st.caption("No positive behaviors detected yet from current inputs.")
 
     with st.expander("Detailed Risk Breakdown"):
         for r in risks[:3]:
