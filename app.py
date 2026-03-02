@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 from typing import Any
@@ -12,8 +13,8 @@ from risk_engine import (
     NUMERIC_COLUMNS,
     build_summary_text,
     generate_risks,
+    load_health_file,
     merge_manual_inputs,
-    prepare_timeseries,
     summarize_timeseries,
 )
 
@@ -159,6 +160,9 @@ def _inject_styles() -> None:
         .mini-card.green::before {
             background: linear-gradient(90deg, #10b981, #34d399);
         }
+        .mini-card.yellow::before {
+            background: linear-gradient(90deg, #f59e0b, #fcd34d);
+        }
         .mini-card.purple::before {
             background: linear-gradient(90deg, #4f46e5, #60a5fa);
         }
@@ -221,6 +225,335 @@ def _inject_styles() -> None:
             color: #dbeafe;
             font-weight: 650;
             margin-bottom: 0.15rem;
+        }
+        .stButton button[kind="secondary"] {
+            border-radius: 999px;
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            background: rgba(15,23,42,0.78);
+            color: #dbeafe;
+            min-height: 46px;
+            box-shadow: 0 8px 20px rgba(2, 6, 23, 0.18);
+        }
+        .stButton button[kind="secondary"]:hover {
+            border-color: rgba(96, 165, 250, 0.28);
+            background: rgba(15,23,42,0.92);
+            color: #f8fafc;
+        }
+        .stButton button[kind="primary"] {
+            box-shadow: 0 12px 24px rgba(14, 165, 233, 0.20);
+        }
+        .status-panel {
+            background: linear-gradient(180deg, rgba(15,23,42,0.90), rgba(15,23,42,0.74));
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            border-radius: 20px;
+            padding: 16px 18px;
+            margin-top: 8px;
+            margin-bottom: 14px;
+            box-shadow: 0 10px 30px rgba(2, 6, 23, 0.34);
+            position: relative;
+            overflow: hidden;
+        }
+        .status-panel::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 0;
+            height: 4px;
+        }
+        .status-panel.status-green {
+            border-color: rgba(16, 185, 129, 0.28);
+            box-shadow: 0 12px 34px rgba(3, 105, 92, 0.18);
+            background:
+                radial-gradient(circle at 0% 0%, rgba(16, 185, 129, 0.14), transparent 32%),
+                linear-gradient(180deg, rgba(15,23,42,0.92), rgba(15,23,42,0.76));
+        }
+        .status-panel.status-green::before {
+            background: linear-gradient(90deg, #10b981, #34d399);
+        }
+        .status-panel.status-yellow {
+            border-color: rgba(245, 158, 11, 0.26);
+            box-shadow: 0 12px 34px rgba(120, 53, 15, 0.18);
+            background:
+                radial-gradient(circle at 0% 0%, rgba(245, 158, 11, 0.14), transparent 32%),
+                linear-gradient(180deg, rgba(15,23,42,0.92), rgba(15,23,42,0.76));
+        }
+        .status-panel.status-yellow::before {
+            background: linear-gradient(90deg, #f59e0b, #fcd34d);
+        }
+        .status-panel.status-red {
+            border-color: rgba(239, 68, 68, 0.26);
+            box-shadow: 0 12px 34px rgba(127, 29, 29, 0.20);
+            background:
+                radial-gradient(circle at 0% 0%, rgba(239, 68, 68, 0.13), transparent 32%),
+                linear-gradient(180deg, rgba(15,23,42,0.92), rgba(15,23,42,0.76));
+        }
+        .status-panel.status-red::before {
+            background: linear-gradient(90deg, #ef4444, #fb7185);
+        }
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+        .status-badge {
+            min-width: 98px;
+            padding: 9px 14px;
+            border-radius: 999px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            text-align: center;
+            font-size: 0.95rem;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 10px 22px rgba(2, 6, 23, 0.28);
+        }
+        .status-green {
+            background: linear-gradient(135deg, rgba(6, 95, 70, 0.85), rgba(16, 185, 129, 0.32));
+            color: #ecfdf5;
+            border: 1px solid rgba(16, 185, 129, 0.46);
+        }
+        .status-yellow {
+            background: linear-gradient(135deg, rgba(146, 64, 14, 0.82), rgba(245, 158, 11, 0.30));
+            color: #fffbeb;
+            border: 1px solid rgba(245, 158, 11, 0.42);
+        }
+        .status-red {
+            background: linear-gradient(135deg, rgba(127, 29, 29, 0.82), rgba(239, 68, 68, 0.28));
+            color: #fff1f2;
+            border: 1px solid rgba(239, 68, 68, 0.42);
+        }
+        .status-title {
+            color: #f8fafc;
+            font-size: 1.15rem;
+            font-weight: 680;
+            margin: 0;
+        }
+        .status-caption {
+            color: #a5b4cc;
+            font-size: 0.86rem;
+            margin-top: 2px;
+        }
+        .focus-item {
+            margin-top: 10px;
+        }
+        .focus-label {
+            color: #8fb6ff;
+            font-size: 0.78rem;
+            font-weight: 650;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 3px;
+        }
+        .focus-value {
+            color: #e2e8f0;
+            font-size: 0.98rem;
+        }
+        .results-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-top: 8px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        .results-title {
+            color: #f8fafc;
+            font-size: 1.15rem;
+            font-weight: 680;
+        }
+        .results-subtle {
+            color: #94a3b8;
+            font-size: 0.84rem;
+        }
+        .info-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 7px 12px;
+            border-radius: 999px;
+            background: rgba(37, 99, 235, 0.10);
+            border: 1px solid rgba(59, 130, 246, 0.18);
+            color: #bfdbfe;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        .legend-wrap {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+        .legend-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            background: rgba(15,23,42,0.64);
+            border: 1px solid rgba(148, 163, 184, 0.14);
+            color: #dbe3f0;
+            font-size: 0.78rem;
+        }
+        .legend-swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            display: inline-block;
+        }
+        .stats-strip {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+        .stats-pill {
+            background: rgba(15,23,42,0.60);
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            border-radius: 16px;
+            padding: 11px 13px;
+            box-shadow: 0 8px 20px rgba(2, 6, 23, 0.22);
+            position: relative;
+            overflow: hidden;
+        }
+        .stats-pill::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            top: 0;
+            height: 2px;
+            background: linear-gradient(90deg, #2563eb, #38bdf8);
+        }
+        .stats-pill.purple::before {
+            background: linear-gradient(90deg, #4f46e5, #60a5fa);
+        }
+        .stats-pill.green::before {
+            background: linear-gradient(90deg, #10b981, #34d399);
+        }
+        .stats-pill.yellow::before {
+            background: linear-gradient(90deg, #f59e0b, #fcd34d);
+        }
+        .stats-label {
+            color: #94a3b8;
+            font-size: 0.74rem;
+            margin-bottom: 3px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            font-weight: 650;
+        }
+        .stats-value {
+            color: #f8fafc;
+            font-size: 1.02rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+        .stats-sub {
+            color: #9aa6bb;
+            font-size: 0.76rem;
+            margin-top: 2px;
+        }
+        .action-card {
+            background: linear-gradient(180deg, rgba(15,23,42,0.84), rgba(15,23,42,0.70));
+            border: 1px solid rgba(59, 130, 246, 0.16);
+            border-radius: 18px;
+            padding: 14px 15px;
+            min-height: 138px;
+            box-shadow: 0 10px 24px rgba(2, 6, 23, 0.28);
+            position: relative;
+            overflow: hidden;
+        }
+        .action-card::before {
+            content: "";
+            position: absolute;
+            inset: 0 0 auto 0;
+            height: 3px;
+            background: linear-gradient(90deg, #38bdf8, #2563eb);
+        }
+        .action-step {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            border-radius: 999px;
+            background: rgba(37, 99, 235, 0.18);
+            border: 1px solid rgba(59, 130, 246, 0.26);
+            color: #dbeafe;
+            font-size: 0.9rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+        }
+        .action-title {
+            color: #f8fafc;
+            font-size: 0.84rem;
+            font-weight: 650;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 6px;
+        }
+        .action-body {
+            color: #dbe3f0;
+            font-size: 0.95rem;
+            line-height: 1.45;
+        }
+        .snapshot-panel {
+            background: rgba(15,23,42,0.52);
+            border: 1px solid rgba(148, 163, 184, 0.10);
+            border-radius: 16px;
+            padding: 12px 14px;
+            margin-top: 4px;
+        }
+        .ask-banner {
+            background:
+                radial-gradient(circle at 100% 0%, rgba(56, 189, 248, 0.12), transparent 34%),
+                linear-gradient(180deg, rgba(15,23,42,0.84), rgba(15,23,42,0.72));
+            border: 1px solid rgba(56, 189, 248, 0.16);
+            border-radius: 16px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+            box-shadow: 0 10px 24px rgba(2, 6, 23, 0.20);
+        }
+        .ask-answer-label {
+            color: #93c5fd;
+            font-size: 0.76rem;
+            font-weight: 650;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+        .quick-prompt-note {
+            color: #94a3b8;
+            font-size: 0.8rem;
+            margin-top: 8px;
+            margin-bottom: 6px;
+        }
+        @media (max-width: 900px) {
+            .carenav-hero {
+                padding: 16px 16px;
+                min-height: 136px;
+            }
+            .hero-mark {
+                width: 50px;
+                height: 50px;
+                right: 16px;
+                top: 16px;
+                font-size: 1.6rem;
+            }
+            .status-panel {
+                padding: 14px 14px;
+                border-radius: 18px;
+            }
+            .stats-strip {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+            .action-card {
+                min-height: 118px;
+                padding: 12px 13px;
+            }
         }
         </style>
         """,
@@ -681,6 +1014,66 @@ def _card(title: str, value: str, subtitle: str = "", tone: str = "") -> None:
     )
 
 
+def _render_action_cards(actions: list[str]) -> None:
+    shown = actions[:3]
+    if not shown:
+        return
+    cols = st.columns(len(shown), gap="medium")
+    titles = ["Do First", "Then", "Keep Going"]
+    for idx, (col, action) in enumerate(zip(cols, shown), start=1):
+        with col:
+            title = titles[idx - 1] if idx - 1 < len(titles) else f"Step {idx}"
+            st.markdown(
+                f"""
+                <div class="action-card">
+                  <div class="action-step">{idx}</div>
+                  <div class="action-title">{title}</div>
+                  <div class="action-body">{html.escape(action)}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def _status_from_risk(risks: list[Any], alerts: list[str], confidence: float) -> dict[str, str]:
+    if alerts:
+        return {
+            "color": "red",
+            "label": "Red",
+            "title": "Needs attention now",
+            "caption": "Current readings or symptoms suggest you should review this promptly.",
+        }
+    if not risks:
+        return {
+            "color": "green",
+            "label": "Green",
+            "title": "Baseline looks stable",
+            "caption": "No strong early-warning signal yet. More data improves confidence.",
+        }
+
+    top_prob = float(risks[0].probability or 0)
+    if top_prob >= 65:
+        return {
+            "color": "red",
+            "label": "Red",
+            "title": "Elevated early-warning signal",
+            "caption": "The current pattern suggests higher short-term risk than usual.",
+        }
+    if top_prob >= 35 or confidence < 0.45:
+        return {
+            "color": "yellow",
+            "label": "Yellow",
+            "title": "Watch closely this week",
+            "caption": "There is a moderate signal worth tracking before it worsens.",
+        }
+    return {
+        "color": "green",
+        "label": "Green",
+        "title": "On track for now",
+        "caption": "Current data points to a lower near-term risk signal.",
+    }
+
+
 def _get_api_key() -> str:
     def _clean(value: Any) -> str:
         if value is None:
@@ -728,9 +1121,7 @@ def _preview_upload(uploaded_file: Any) -> tuple[pd.DataFrame, dict[str, Any] | 
     if uploaded_file is None:
         return pd.DataFrame(), None, None
     try:
-        uploaded_file.seek(0)
-        raw = pd.read_csv(uploaded_file)
-        ts = prepare_timeseries(raw)
+        ts = load_health_file(uploaded_file, filename=getattr(uploaded_file, "name", None))
         summary = summarize_timeseries(ts)
         return ts, summary, None
     except Exception as exc:
@@ -794,9 +1185,7 @@ def _run_analysis(
     upload_error = None
     if uploaded_file is not None:
         try:
-            uploaded_file.seek(0)
-            raw = pd.read_csv(uploaded_file)
-            ts_df = prepare_timeseries(raw)
+            ts_df = load_health_file(uploaded_file, filename=getattr(uploaded_file, "name", None))
         except Exception as exc:
             upload_error = str(exc)
 
@@ -866,9 +1255,9 @@ def main() -> None:
         """
         <div class="carenav-hero">
           <div class="hero-mark">✦</div>
-          <div class="hero-kicker">✦ Predictive Care Navigator</div>
+          <div class="hero-kicker">✦ Early Warning Health Signal</div>
           <h1>CareNav</h1>
-          <p>CareNav helps make care more predictive by spotting early warning signals from current readings and wearable trends, then translating them into clear risks, likely drivers, and next steps before issues escalate.</p>
+          <p>CareNav helps people catch health shifts earlier by turning wearable trends and current readings into one clear signal, one clear reason, and one clear next move before issues escalate.</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -902,7 +1291,7 @@ def main() -> None:
     input_col, wearable_col = st.columns([1.55, 0.95], gap="large")
     with wearable_col:
         st.markdown("### Wearable Data")
-        uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+        uploaded_file = st.file_uploader("Upload CSV or Apple Health XML", type=["csv", "xml"])
         st.download_button(
             "Sample CSV template",
             data=_sample_csv().to_csv(index=False).encode("utf-8"),
@@ -911,19 +1300,19 @@ def main() -> None:
         )
         with st.expander("Supported columns"):
             st.code(", ".join(["date", *NUMERIC_COLUMNS]), language="text")
-            st.caption("CareNav auto-maps many Apple Health and WHOOP-style CSV formats, including long-format exports.")
+            st.caption("CareNav auto-maps many Apple Health and WHOOP-style CSV formats, and also accepts Apple Health `export.xml` directly.")
 
     upload_preview_df, upload_preview_summary, upload_preview_error = _preview_upload(uploaded_file)
     prefilled_metrics = _prefill_form_from_summary(upload_preview_summary)
 
     with wearable_col:
         if upload_preview_error:
-            st.warning(f"CSV preview could not be parsed yet: {upload_preview_error}")
+            st.warning(f"File preview could not be parsed yet: {upload_preview_error}")
         elif upload_preview_summary and prefilled_metrics:
             pretty = ", ".join(m.replace("_", " ") for m in prefilled_metrics[:6])
             extra = "" if len(prefilled_metrics) <= 6 else f" +{len(prefilled_metrics) - 6} more"
             st.markdown(
-                f'<div class="subtle-note">CSV parsed and prefilled blank fields from latest readings: {pretty}{extra}.</div>',
+                f'<div class="subtle-note">File parsed and prefilled blank fields from latest readings: {pretty}{extra}.</div>',
                 unsafe_allow_html=True,
             )
         if upload_preview_summary and upload_preview_summary.get("features"):
@@ -1034,7 +1423,7 @@ def main() -> None:
                 temp_f_text = st.text_input("Temperature F", placeholder="e.g. 98.6", key="temp_f_text")
             with m3:
                 st.info(
-                    "Fastest value: add resting HR, sleep, steps, and HRV. CSV uploads can fill blanks automatically from wearable data."
+                    "Fastest value: add resting HR, sleep, steps, and HRV. Uploads can fill blanks automatically from wearable data."
                 )
 
             submitted = st.form_submit_button("Run AI-powered Analysis", type="primary", use_container_width=True)
@@ -1086,7 +1475,7 @@ def main() -> None:
 
     result = st.session_state.get("carenav_result")
     if not result:
-        st.info("Add any values you know above and click `Run AI-powered Analysis` to generate a prediction summary.")
+        st.info("Add any values you know above and click `Run AI-powered Analysis` to generate an early-warning summary.")
         return
 
     summary = result["summary"]
@@ -1105,25 +1494,86 @@ def main() -> None:
     ai_payload = result.get("ai_payload", {})
 
     if upload_error:
-        st.warning(f"CSV upload could not be parsed: {upload_error}")
+        st.warning(f"Upload could not be parsed: {upload_error}")
+
+    st.markdown(
+        f"""
+        <div class="results-header">
+          <div>
+            <div class="results-title">Your Weekly Health Signal</div>
+            <div class="results-subtle">This view is built for early warning and next steps, not diagnosis.</div>
+          </div>
+          <div class="info-chip">✦ {summary.get("n_days", 0)} tracked days · {len(ts_df) if ts_df is not None else 0} records reviewed</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if alerts:
-        st.error("Urgent warning: " + " | ".join(alerts[:2]))
+        st.error("Escalation signal: " + " | ".join(alerts[:2]))
 
     top_risk = risks[0] if risks else None
     top_prob = f"{top_risk.probability:.0f}%" if top_risk else "N/A"
     check_in = _recommended_check_in(risks, confidence, alerts)
     present_metrics, total_metrics = _data_coverage(summary)
+    primary_actions = ai_actions if ai_actions else _build_priority_actions(risks, alerts)
+    status = _status_from_risk(risks, alerts, confidence)
+    main_watch = top_risk.name if top_risk else "No strong signal detected"
+    main_action = primary_actions[0] if primary_actions else "Keep healthy routines steady and check in again after new readings."
+    main_positive = positives[0] if positives else "No clear protective signal yet."
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        _card("Top risk", top_risk.name if top_risk else "No result", top_risk.severity if top_risk else "", tone="red")
-    with c2:
-        _card("Top probability", top_prob, "Rule-based estimate", tone="blue")
-    with c3:
-        _card("Confidence", f"{confidence:.0%}", f"Data coverage {present_metrics}/{total_metrics}", tone="purple")
-    with c4:
-        _card("Next check-in", check_in, "Suggested cadence", tone="green")
+    st.markdown(
+        f"""
+        <div class="status-panel status-{status["color"]}">
+          <div class="status-row">
+            <div class="status-badge status-{status["color"]}">{status["label"]} Signal</div>
+            <div>
+              <div class="status-title">{status["title"]}</div>
+              <div class="status-caption">{status["caption"]}</div>
+            </div>
+          </div>
+          <div class="focus-item">
+            <div class="focus-label">Main thing to watch this week</div>
+            <div class="focus-value">{main_watch} ({top_prob})</div>
+          </div>
+          <div class="focus-item">
+            <div class="focus-label">Best next move</div>
+            <div class="focus-value">{main_action}</div>
+          </div>
+          <div class="focus-item">
+            <div class="focus-label">Positive behaviour to keep</div>
+            <div class="focus-value">{main_positive}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    window_label = f"{summary.get('n_days', 0)} tracked days"
+    freshness = summary.get("freshness_days")
+    freshness_text = "Current" if freshness in (None, 0) else f"{freshness} day(s) old"
+    st.markdown(
+        f"""
+        <div class="stats-strip">
+          <div class="stats-pill purple">
+            <div class="stats-label">Confidence</div>
+            <div class="stats-value">{confidence:.0%}</div>
+            <div class="stats-sub">Data coverage {present_metrics}/{total_metrics}</div>
+          </div>
+          <div class="stats-pill">
+            <div class="stats-label">Next check-in</div>
+            <div class="stats-value">{html.escape(check_in)}</div>
+            <div class="stats-sub">Suggested cadence</div>
+          </div>
+          <div class="stats-pill {status["color"]}">
+            <div class="stats-label">Data window</div>
+            <div class="stats-value">{html.escape(window_label)}</div>
+            <div class="stats-sub">{html.escape(freshness_text)}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.markdown("### Top Risk Explanation")
     if ai_error and _get_api_key():
@@ -1132,19 +1582,24 @@ def main() -> None:
         st.info("ChatGPT key not configured. Showing local summary.")
     st.markdown(ai_text)
 
-    st.markdown("### Suggested Focus This Week")
+    st.markdown("### What To Do Next")
     if ai_actions_error and _get_api_key():
         st.caption("AI action guidance is unavailable right now. Showing local fallback suggestions.")
-    actions = ai_actions if ai_actions else _build_priority_actions(risks, alerts)
-    if actions:
-        for i, action in enumerate(actions, start=1):
-            st.write(f"{i}. {action}")
+    if primary_actions:
+        _render_action_cards(primary_actions)
     else:
-        st.write("1. Keep healthy routines consistent and rerun after new readings are available.")
+        _render_action_cards(["Keep healthy routines consistent and rerun after new readings are available."])
 
     with st.container(border=True):
-        st.markdown('<div class="ai-search-title">Ask CareNav AI</div>', unsafe_allow_html=True)
-        st.caption("Ask about your current results or use a quick prompt to learn more.")
+        st.markdown(
+            """
+            <div class="ask-banner">
+              <div class="ai-search-title">Ask CareNav AI</div>
+              <div class="results-subtle">Use this for quick follow-up questions about your results, trends, and practical next steps.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         q1, q2 = st.columns([1.35, 0.65])
         with q1:
             ai_question = st.text_input(
@@ -1156,6 +1611,7 @@ def main() -> None:
         with q2:
             ask_clicked = st.button("✦ Ask AI", use_container_width=True, type="primary")
 
+        st.markdown('<div class="quick-prompt-note">Suggested questions</div>', unsafe_allow_html=True)
         quick_q_cols = st.columns(3)
         quick_questions = [
             "What does my top risk mean?",
@@ -1201,26 +1657,22 @@ def main() -> None:
     search_answer = st.session_state.get("carenav_ai_search_answer")
     search_question_last = st.session_state.get("carenav_ai_search_question_last")
     if search_answer:
-        if search_question_last:
-            st.caption(f"Question: {search_question_last}")
-        st.markdown(search_answer)
+        with st.container(border=True):
+            st.markdown('<div class="ask-answer-label">AI response</div>', unsafe_allow_html=True)
+            if search_question_last:
+                st.caption(f"Question: {search_question_last}")
+            st.markdown(search_answer)
 
-    b1, b2 = st.columns([1.1, 1.0])
-    with b1:
-        st.markdown('<div class="section-title">Top Risks</div>', unsafe_allow_html=True)
-        for r in risks[:3]:
-            st.markdown(
-                f'<span class="pill {_severity_class(r.severity)}">{r.name}: {r.probability:.0f}%</span>',
-                unsafe_allow_html=True,
-            )
-    with b2:
-        st.markdown('<div class="section-title">Positive Behaviours</div>', unsafe_allow_html=True)
-        if positives:
-            st.success(positives[0])
-        else:
-            st.caption("No clear protective signal detected yet. Add more data over time.")
+    with st.expander("Signals Snapshot"):
+        chips = "".join(
+            [
+                f'<span class="pill {_severity_class(r.severity)}">{html.escape(r.name)}: {r.probability:.0f}%</span>'
+                for r in risks[:3]
+            ]
+        )
+        st.markdown(f'<div class="snapshot-panel">{chips}</div>', unsafe_allow_html=True)
 
-    with st.expander("Detailed Risk Breakdown"):
+    with st.expander("More Detail"):
         for r in risks[:3]:
             st.markdown(f"#### {r.name}")
             d1, d2, d3, d4 = st.columns(4)
@@ -1242,9 +1694,9 @@ def main() -> None:
                     st.write(f"- {line}")
             st.divider()
 
-    with st.expander("Trend Data (Uploaded CSV)"):
+    with st.expander("Trend Data (Uploaded File)"):
         if ts_df is None or ts_df.empty:
-            st.caption("No CSV uploaded. Analysis used manual inputs only.")
+            st.caption("No file uploaded. Analysis used manual inputs only.")
         else:
             st.write(
                 f"Loaded {len(ts_df)} rows from {summary.get('date_min').date()} to {summary.get('date_max').date()}."
@@ -1268,6 +1720,32 @@ def main() -> None:
                 if chart_df.empty:
                     st.caption("No chartable points for this view.")
                 else:
+                    metric_palette = {
+                        "resting_hr": "#38bdf8",
+                        "hrv": "#3b82f6",
+                        "sleep_hours": "#fca5a5",
+                        "steps": "#34d399",
+                        "spo2": "#22d3ee",
+                        "weight_kg": "#c084fc",
+                        "systolic_bp": "#f59e0b",
+                        "diastolic_bp": "#fb7185",
+                        "glucose_fasting": "#f97316",
+                        "temperature_f": "#f43f5e",
+                    }
+                    legend_domain = list(selected_cols)
+                    legend_range = [metric_palette.get(metric, "#94a3b8") for metric in legend_domain]
+                    legend_html = "".join(
+                        [
+                            (
+                                '<span class="legend-chip">'
+                                f'<span class="legend-swatch" style="background:{metric_palette.get(metric, "#94a3b8")}"></span>'
+                                f'{metric.replace("_", " ")}'
+                                "</span>"
+                            )
+                            for metric in selected_cols
+                        ]
+                    )
+                    st.markdown(f'<div class="legend-wrap">{legend_html}</div>', unsafe_allow_html=True)
                     chart_long = (
                         chart_df.reset_index()
                         .melt(id_vars="date", var_name="Metric", value_name="Value")
@@ -1279,7 +1757,14 @@ def main() -> None:
                         .encode(
                             x=alt.X("date:T", title="Date"),
                             y=alt.Y("Value:Q", title="Value"),
-                            color=alt.Color("Metric:N", legend=alt.Legend(orient="top-right", title="Metric")),
+                            color=alt.Color(
+                                "Metric:N",
+                                legend=None,
+                                scale=alt.Scale(
+                                    domain=legend_domain,
+                                    range=legend_range,
+                                ),
+                            ),
                             tooltip=["date:T", "Metric:N", "Value:Q"],
                         )
                         .properties(height=320)
