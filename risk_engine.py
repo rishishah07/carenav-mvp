@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any
 
@@ -193,12 +194,20 @@ def _find_best_date_column(ts: pd.DataFrame) -> str | None:
     best_col = None
     best_score = -1.0
     for col in candidates:
-        parsed = pd.to_datetime(ts[col], errors="coerce")
+        parsed = _parse_datetime_series(ts[col])
         score = float(parsed.notna().mean()) if len(parsed) else 0.0
         if score > best_score and score >= 0.5:
             best_col = col
             best_score = score
     return best_col
+
+
+def _parse_datetime_series(values: Any) -> pd.Series:
+    parsed = pd.to_datetime(values, errors="coerce")
+    tz = getattr(parsed.dt, "tz", None)
+    if tz is not None:
+        parsed = parsed.dt.tz_localize(None)
+    return parsed
 
 
 def _normalize_metric_value(metric: Any) -> str | None:
@@ -315,15 +324,15 @@ def _prepare_long_format_timeseries(ts: pd.DataFrame) -> pd.DataFrame | None:
         return None
 
     work = ts.copy()
-    work["date"] = pd.to_datetime(work[date_col], errors="coerce")
+    work["date"] = _parse_datetime_series(work[date_col])
     work["metric_canonical"] = work[metric_col].map(_normalize_metric_value)
 
     unit_col = next((c for c in ["unit", "units", "measurement_unit"] if c in cols), None)
 
     # If numeric values are absent (common for sleep intervals), try duration from start/end timestamps.
     if value_col is None and {"start", "end"} <= cols:
-        work["start_tmp"] = pd.to_datetime(work["start"], errors="coerce")
-        work["end_tmp"] = pd.to_datetime(work["end"], errors="coerce")
+        work["start_tmp"] = _parse_datetime_series(work["start"])
+        work["end_tmp"] = _parse_datetime_series(work["end"])
         work["value_num"] = (work["end_tmp"] - work["start_tmp"]).dt.total_seconds()
     elif value_col is not None:
         work["value_num"] = pd.to_numeric(work[value_col], errors="coerce")
@@ -379,8 +388,100 @@ def _prepare_long_format_timeseries(ts: pd.DataFrame) -> pd.DataFrame | None:
         return None
 
     out = pd.concat(frames, axis=1).reset_index()
-    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out["date"] = _parse_datetime_series(out["date"])
     return out
+
+
+def _apple_sleep_is_asleep(value: str) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    asleep_tokens = [
+        "hkcategoryvaluesleepanalysisasleep",
+        "hkcategoryvaluesleepanalysisasleepcore",
+        "hkcategoryvaluesleepanalysisasleepdeep",
+        "hkcategoryvaluesleepanalysisasleeprem",
+        "hkcategoryvaluesleepanalysisasleepunspecified",
+    ]
+    return any(token in text for token in asleep_tokens)
+
+
+def _parse_apple_health_xml(file_obj: Any) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+
+    for _, elem in ET.iterparse(file_obj, events=("end",)):
+        if elem.tag != "Record":
+            continue
+
+        attrs = dict(elem.attrib)
+        record_type = attrs.get("type", "")
+        start = attrs.get("startDate") or attrs.get("creationDate")
+        end = attrs.get("endDate")
+        unit = attrs.get("unit", "")
+        value = attrs.get("value")
+
+        if not record_type or not start:
+            elem.clear()
+            continue
+
+        # Apple sleep data is exported as category records. Convert asleep stages into durations.
+        if "sleepanalysis" in record_type.lower():
+            if not end or not _apple_sleep_is_asleep(str(value)):
+                elem.clear()
+                continue
+            start_ts = pd.to_datetime(start, errors="coerce")
+            end_ts = pd.to_datetime(end, errors="coerce")
+            if pd.isna(start_ts) or pd.isna(end_ts) or end_ts <= start_ts:
+                elem.clear()
+                continue
+            duration_seconds = (end_ts - start_ts).total_seconds()
+            rows.append(
+                {
+                    "date": start,
+                    "type": "sleep_duration",
+                    "unit": "sec",
+                    "value": duration_seconds,
+                    "start": start,
+                    "end": end,
+                }
+            )
+            elem.clear()
+            continue
+
+        rows.append(
+            {
+                "date": start,
+                "type": record_type,
+                "unit": unit,
+                "value": value,
+                "start": start,
+                "end": end,
+            }
+        )
+        elem.clear()
+
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+
+    return pd.DataFrame(rows)
+
+
+def load_health_file(file_obj: Any, filename: str | None = None) -> pd.DataFrame:
+    inferred_name = str(filename or getattr(file_obj, "name", "") or "").lower()
+    if inferred_name.endswith(".xml"):
+        xml_df = _parse_apple_health_xml(file_obj)
+        if xml_df.empty:
+            raise ValueError("Apple Health XML was read, but no supported records were found.")
+        return prepare_timeseries(xml_df)
+
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+    csv_df = pd.read_csv(file_obj)
+    if hasattr(file_obj, "seek"):
+        file_obj.seek(0)
+    return prepare_timeseries(csv_df)
 
 
 def prepare_timeseries(df: pd.DataFrame | None) -> pd.DataFrame:
@@ -409,7 +510,7 @@ def prepare_timeseries(df: pd.DataFrame | None) -> pd.DataFrame:
     if "date" not in ts.columns:
         raise ValueError("CSV needs a date/timestamp column (or a long format with date/type/value columns).")
 
-    ts["date"] = pd.to_datetime(ts["date"], errors="coerce")
+    ts["date"] = _parse_datetime_series(ts["date"])
     ts["date"] = ts["date"].dt.normalize()
     ts = ts.dropna(subset=["date"]).sort_values("date")
 
@@ -426,6 +527,106 @@ def prepare_timeseries(df: pd.DataFrame | None) -> pd.DataFrame:
     return ts
 
 
+def _recovery_summary_from_features(features: dict[str, Any]) -> dict[str, Any]:
+    recovery_score = 50.0
+    recovery_notes: list[str] = []
+
+    def metric_val(key: str, field: str) -> float | None:
+        value = features.get(key, {}).get(field)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    sleep_avg7 = metric_val("sleep_hours", "avg7") or metric_val("sleep_hours", "latest")
+    sleep_delta_30 = metric_val("sleep_hours", "delta_vs_30")
+    hrv_avg7 = metric_val("hrv", "avg7") or metric_val("hrv", "latest")
+    hrv_delta_30 = metric_val("hrv", "delta_vs_30")
+    rhr_avg7 = metric_val("resting_hr", "avg7") or metric_val("resting_hr", "latest")
+    rhr_delta_30 = metric_val("resting_hr", "delta_vs_30")
+    steps_avg7 = metric_val("steps", "avg7") or metric_val("steps", "latest")
+    steps_delta_30 = metric_val("steps", "delta_vs_30")
+    spo2_avg7 = metric_val("spo2", "avg7") or metric_val("spo2", "latest")
+    observed = [sleep_avg7, hrv_avg7, rhr_avg7, steps_avg7, spo2_avg7]
+    if all(v is None for v in observed):
+        return {
+            "score": None,
+            "label": "Insufficient data",
+            "notes": [],
+        }
+
+    if sleep_avg7 is not None:
+        if sleep_avg7 >= 7.5:
+            recovery_score += 8
+            recovery_notes.append("Sleep is supporting recovery.")
+        elif sleep_avg7 < 6.0:
+            recovery_score -= 12
+            recovery_notes.append("Sleep volume is low.")
+    if sleep_delta_30 is not None:
+        if sleep_delta_30 >= 0.5:
+            recovery_score += 6
+        elif sleep_delta_30 <= -0.75:
+            recovery_score -= 9
+            recovery_notes.append("Sleep is down versus your 30-day baseline.")
+
+    if hrv_avg7 is not None:
+        if hrv_avg7 >= 55:
+            recovery_score += 5
+        elif hrv_avg7 < 30:
+            recovery_score -= 8
+            recovery_notes.append("HRV is under strain.")
+    if hrv_delta_30 is not None:
+        if hrv_delta_30 >= 5:
+            recovery_score += 8
+        elif hrv_delta_30 <= -5:
+            recovery_score -= 10
+            recovery_notes.append("HRV is below your usual range.")
+
+    if rhr_avg7 is not None:
+        if rhr_avg7 <= 60:
+            recovery_score += 4
+        elif rhr_avg7 >= 80:
+            recovery_score -= 7
+            recovery_notes.append("Resting heart rate is elevated.")
+    if rhr_delta_30 is not None:
+        if rhr_delta_30 <= -3:
+            recovery_score += 7
+        elif rhr_delta_30 >= 4:
+            recovery_score -= 9
+            recovery_notes.append("Resting heart rate is above your personal baseline.")
+
+    if steps_avg7 is not None:
+        if steps_avg7 >= 8000:
+            recovery_score += 5
+        elif steps_avg7 < 3500:
+            recovery_score -= 5
+            recovery_notes.append("Activity volume has dropped.")
+    if steps_delta_30 is not None and steps_delta_30 <= -2000:
+        recovery_score -= 4
+
+    if spo2_avg7 is not None:
+        if spo2_avg7 >= 97:
+            recovery_score += 4
+        elif spo2_avg7 < 95:
+            recovery_score -= 8
+            recovery_notes.append("Oxygen saturation is softer than ideal.")
+
+    recovery_score = float(max(0.0, min(100.0, recovery_score)))
+    if recovery_score >= 70:
+        recovery_label = "Recovered"
+    elif recovery_score >= 45:
+        recovery_label = "Watch"
+    else:
+        recovery_label = "Strained"
+    return {
+        "score": round(recovery_score, 1),
+        "label": recovery_label,
+        "notes": recovery_notes[:3],
+    }
+
+
 def summarize_timeseries(ts: pd.DataFrame) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "n_days": 0,
@@ -433,6 +634,7 @@ def summarize_timeseries(ts: pd.DataFrame) -> dict[str, Any]:
         "date_max": None,
         "freshness_days": None,
         "features": {},
+        "recovery": None,
     }
     if ts is None or ts.empty:
         return summary
@@ -445,7 +647,10 @@ def summarize_timeseries(ts: pd.DataFrame) -> dict[str, Any]:
     ts = ts.sort_values("date")
     recent7 = ts.tail(7)
     recent14 = ts.tail(14)
+    recent30 = ts.tail(30)
+    recent90 = ts.tail(90)
     prev7 = recent14.head(max(0, len(recent14) - len(recent7)))
+    prev30 = recent90.head(max(0, len(recent90) - len(recent30)))
 
     for col in NUMERIC_COLUMNS:
         series = ts[col].dropna()
@@ -454,18 +659,39 @@ def summarize_timeseries(ts: pd.DataFrame) -> dict[str, Any]:
         latest_value = float(series.iloc[-1])
         recent7_nonnull = recent7[col].dropna()
         recent14_nonnull = recent14[col].dropna()
+        recent30_nonnull = recent30[col].dropna()
+        recent90_nonnull = recent90[col].dropna()
         prev7_nonnull = prev7[col].dropna() if not prev7.empty else pd.Series(dtype=float)
+        prev30_nonnull = prev30[col].dropna() if not prev30.empty else pd.Series(dtype=float)
         avg7 = float(recent7_nonnull.mean()) if not recent7_nonnull.empty else np.nan
         avg14 = float(recent14_nonnull.mean()) if not recent14_nonnull.empty else np.nan
+        avg30 = float(recent30_nonnull.mean()) if not recent30_nonnull.empty else np.nan
+        avg90 = float(recent90_nonnull.mean()) if not recent90_nonnull.empty else np.nan
         prev7_mean = float(prev7_nonnull.mean()) if not prev7_nonnull.empty else np.nan
+        prev30_mean = float(prev30_nonnull.mean()) if not prev30_nonnull.empty else np.nan
         trend_delta = avg7 - prev7_mean if not np.isnan(avg7) and not np.isnan(prev7_mean) else np.nan
+        delta_vs_30 = avg7 - avg30 if not np.isnan(avg7) and not np.isnan(avg30) else np.nan
+        delta_vs_90 = avg7 - avg90 if not np.isnan(avg7) and not np.isnan(avg90) else np.nan
+        rolling_delta_30 = avg30 - prev30_mean if not np.isnan(avg30) and not np.isnan(prev30_mean) else np.nan
+        std30 = float(recent30_nonnull.std(ddof=0)) if len(recent30_nonnull) >= 5 else np.nan
+        zscore_30 = delta_vs_30 / std30 if not np.isnan(delta_vs_30) and not np.isnan(std30) and std30 > 1e-9 else np.nan
+        sudden_shift_30 = bool(not np.isnan(zscore_30) and abs(zscore_30) >= 1.5)
         summary["features"][col] = {
             "latest": latest_value,
             "avg7": None if np.isnan(avg7) else float(avg7),
             "avg14": None if np.isnan(avg14) else float(avg14),
+            "avg30": None if np.isnan(avg30) else float(avg30),
+            "avg90": None if np.isnan(avg90) else float(avg90),
             "trend_delta": None if np.isnan(trend_delta) else float(trend_delta),
+            "delta_vs_30": None if np.isnan(delta_vs_30) else float(delta_vs_30),
+            "delta_vs_90": None if np.isnan(delta_vs_90) else float(delta_vs_90),
+            "rolling_delta_30": None if np.isnan(rolling_delta_30) else float(rolling_delta_30),
+            "zscore_30": None if np.isnan(zscore_30) else float(zscore_30),
+            "sudden_shift_30": sudden_shift_30,
             "count": int(series.shape[0]),
         }
+
+    summary["recovery"] = _recovery_summary_from_features(summary["features"])
     return summary
 
 
@@ -485,8 +711,13 @@ def merge_manual_inputs(summary: dict[str, Any], manual: dict[str, Any]) -> dict
         entry["latest"] = val
         if "avg7" not in entry or entry["avg7"] is None:
             entry["avg7"] = val
+        if "avg30" not in entry or entry["avg30"] is None:
+            entry["avg30"] = val
+        if "avg90" not in entry or entry["avg90"] is None:
+            entry["avg90"] = val
         merged_features[key] = entry
     merged["features"] = merged_features
+    merged["recovery"] = _recovery_summary_from_features(merged_features)
     return merged
 
 
@@ -498,6 +729,10 @@ def _metric(features: dict[str, Any], key: str, field: str = "latest") -> float 
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _flag(features: dict[str, Any], key: str, field: str) -> bool:
+    return bool(features.get(key, {}).get(field))
 
 
 def _add_contrib(score: float, delta: float, message: str, store: list[str]) -> float:
@@ -537,7 +772,8 @@ def _data_confidence(summary: dict[str, Any], manual_inputs: dict[str, Any]) -> 
 
     conf = 0.25
     conf += min(feature_count, 8) * 0.05
-    conf += min(n_days, 14) / 14.0 * 0.25
+    conf += min(n_days, 14) / 14.0 * 0.18
+    conf += min(n_days, 90) / 90.0 * 0.12
     conf += min(manual_count, 6) * 0.02
     if freshness_days is None:
         conf -= 0.05
@@ -549,34 +785,47 @@ def _data_confidence(summary: dict[str, Any], manual_inputs: dict[str, Any]) -> 
 
 
 def _positive_behaviors(
-    features: dict[str, Any],
+    summary: dict[str, Any],
     profile: dict[str, Any],
     symptoms: list[str],
 ) -> list[str]:
+    features = summary.get("features", {})
     notes: list[str] = []
     sleep_avg = _metric(features, "sleep_hours", "avg7")
     steps_avg = _metric(features, "steps", "avg7")
     hrv_delta = _metric(features, "hrv", "trend_delta")
     rhr_delta = _metric(features, "resting_hr", "trend_delta")
+    sleep_vs_30 = _metric(features, "sleep_hours", "delta_vs_30")
+    hrv_vs_30 = _metric(features, "hrv", "delta_vs_30")
+    rhr_vs_30 = _metric(features, "resting_hr", "delta_vs_30")
     bp_sys = _metric(features, "systolic_bp")
     bp_dia = _metric(features, "diastolic_bp")
     spo2 = _metric(features, "spo2")
     glucose = _metric(features, "glucose_fasting")
+    recovery = summary.get("recovery") or {}
 
     if sleep_avg is not None and sleep_avg >= 7:
         notes.append(f"Sleep average is {sleep_avg:.1f}h, which supports recovery, glucose control, and resilience.")
+    if sleep_vs_30 is not None and sleep_vs_30 >= 0.5:
+        notes.append("Sleep is running above your 30-day baseline, which is a favorable recovery signal.")
     if steps_avg is not None and steps_avg >= 7000:
         notes.append(f"Activity is strong at ~{steps_avg:,.0f} steps/day, which is protective for cardiometabolic health.")
     if hrv_delta is not None and hrv_delta > 3:
         notes.append("HRV trend is improving, which can signal better recovery and lower physiological strain.")
+    if hrv_vs_30 is not None and hrv_vs_30 >= 5:
+        notes.append("HRV is above your usual 30-day range, which suggests stronger recent recovery.")
     if rhr_delta is not None and rhr_delta < -2:
         notes.append("Resting heart rate trend is falling, which often reflects improved conditioning or recovery.")
+    if rhr_vs_30 is not None and rhr_vs_30 <= -3:
+        notes.append("Resting heart rate is below your 30-day baseline, which can reflect improved recovery.")
     if bp_sys is not None and bp_dia is not None and bp_sys < 130 and bp_dia < 80:
         notes.append("Current blood pressure is in a favorable range, lowering short-term cardiovascular risk.")
     if spo2 is not None and spo2 >= 96:
         notes.append("Oxygen saturation looks stable, which is reassuring for respiratory status.")
     if glucose is not None and glucose < 100:
         notes.append("Fasting glucose is in a healthy range, supporting lower metabolic risk.")
+    if recovery.get("score") is not None and float(recovery.get("score", 0)) >= 70:
+        notes.append(f"Recovery score is {float(recovery['score']):.0f}/100, indicating a strong recent baseline.")
     if not symptoms:
         notes.append("No current symptoms were reported, which improves signal quality and reduces immediate concern.")
     if str(profile.get("smoking_status", "")).lower() == "never":
@@ -603,6 +852,8 @@ def _data_gaps(summary: dict[str, Any], conditions: list[str]) -> list[str]:
         gaps.append("Daily weight is especially high-value when monitoring heart failure decompensation risk.")
     if "Diabetes" in conditions and "glucose_fasting" not in features:
         gaps.append("Frequent glucose readings would improve metabolic risk trend detection.")
+    if (summary.get("n_days", 0) or 0) < 21:
+        gaps.append("At least 3-4 weeks of trends helps establish a useful personal baseline.")
     return gaps[:6]
 
 
@@ -622,18 +873,28 @@ def generate_risks(
 
     rhr = _metric(features, "resting_hr")
     rhr_delta = _metric(features, "resting_hr", "trend_delta")
+    rhr_vs_30 = _metric(features, "resting_hr", "delta_vs_30")
     hrv = _metric(features, "hrv")
     hrv_delta = _metric(features, "hrv", "trend_delta")
+    hrv_vs_30 = _metric(features, "hrv", "delta_vs_30")
     sleep = _metric(features, "sleep_hours", "avg7") or _metric(features, "sleep_hours")
     sleep_delta = _metric(features, "sleep_hours", "trend_delta")
+    sleep_vs_30 = _metric(features, "sleep_hours", "delta_vs_30")
     steps = _metric(features, "steps", "avg7") or _metric(features, "steps")
+    steps_vs_30 = _metric(features, "steps", "delta_vs_30")
     spo2 = _metric(features, "spo2")
+    spo2_vs_30 = _metric(features, "spo2", "delta_vs_30")
     weight = _metric(features, "weight_kg")
     weight_delta = _metric(features, "weight_kg", "trend_delta")
+    weight_vs_30 = _metric(features, "weight_kg", "delta_vs_30")
     sys_bp = _metric(features, "systolic_bp")
     dia_bp = _metric(features, "diastolic_bp")
     glucose = _metric(features, "glucose_fasting")
+    glucose_vs_30 = _metric(features, "glucose_fasting", "delta_vs_30")
     temp = _metric(features, "temperature_f")
+    temp_vs_30 = _metric(features, "temperature_f", "delta_vs_30")
+    recovery = summary.get("recovery") or {}
+    recovery_score = float(recovery.get("score", 50.0) or 50.0)
 
     symptom_set = {s.lower() for s in symptoms}
     condition_set = {c.lower() for c in conditions}
@@ -666,11 +927,17 @@ def generate_risks(
         score = _add_contrib(score, 10, f"Resting HR {rhr:.0f} may indicate increased cardiovascular strain.", why)
     if rhr_delta is not None and rhr_delta > 4:
         score = _add_contrib(score, 8, "Resting HR trend is rising vs prior week.", why)
+    if rhr_vs_30 is not None and rhr_vs_30 >= 4:
+        score = _add_contrib(score, 10, "Resting HR is above your 30-day personal baseline.", why)
+    if _flag(features, "resting_hr", "sudden_shift_30") and rhr_vs_30 is not None and rhr_vs_30 > 0:
+        score = _add_contrib(score, 5, "Resting HR shows a sudden shift versus your recent normal.", why)
     if steps is not None and steps < 4000:
         score = _add_contrib(score, 7, f"Low activity (~{steps:,.0f} steps/day) may worsen cardiovascular risk.", why)
     elif steps is not None and steps >= 8000:
         protective.append(f"Activity level (~{steps:,.0f} steps/day) is protective.")
         score -= 6
+    if steps_vs_30 is not None and steps_vs_30 <= -2000:
+        score = _add_contrib(score, 5, "Activity is below your 30-day baseline.", why)
     if bmi >= 30:
         score = _add_contrib(score, 8, f"BMI {bmi:.1f} increases cardiometabolic load.", why)
     if "hypertension" in condition_set:
@@ -717,8 +984,16 @@ def generate_risks(
     elif steps is not None and steps >= 7500:
         protective.append("Consistent movement likely supports insulin sensitivity.")
         score -= 5
+    if steps_vs_30 is not None and steps_vs_30 <= -2000:
+        score = _add_contrib(score, 6, "Movement is below your 30-day baseline, which can weaken glucose control.", why)
     if sleep is not None and sleep < 6:
         score = _add_contrib(score, 8, f"Low sleep ({sleep:.1f}h) can impair glucose regulation.", why)
+    if sleep_vs_30 is not None and sleep_vs_30 <= -0.75:
+        score = _add_contrib(score, 5, "Sleep is below your 30-day baseline.", why)
+    if glucose_vs_30 is not None and glucose_vs_30 >= 12:
+        score = _add_contrib(score, 8, "Glucose is running above your 30-day baseline.", why)
+    if weight_vs_30 is not None and weight_vs_30 >= 1.0:
+        score = _add_contrib(score, 5, "Weight is above your recent baseline, which can worsen metabolic load.", why)
     if "diabetes" in condition_set or "prediabetes" in condition_set:
         score = _add_contrib(score, 15, "Existing metabolic history increases progression risk.", why)
     prob = _probability_from_score(_clamp(score))
@@ -751,14 +1026,34 @@ def generate_risks(
             score -= 7
     if sleep_delta is not None and sleep_delta < -0.75:
         score = _add_contrib(score, 10, "Sleep duration has dropped vs prior week.", why)
+    if sleep_vs_30 is not None and sleep_vs_30 < -0.75:
+        score = _add_contrib(score, 10, "Sleep is below your 30-day baseline.", why)
+    elif sleep_vs_30 is not None and sleep_vs_30 >= 0.5:
+        protective.append("Sleep is above your recent baseline.")
+        score -= 4
     if hrv is not None and hrv < 30:
         score = _add_contrib(score, 12, f"HRV {hrv:.0f} may reflect elevated physiological stress.", why)
     if hrv_delta is not None and hrv_delta < -5:
         score = _add_contrib(score, 10, "HRV trend is worsening vs prior week.", why)
+    if hrv_vs_30 is not None and hrv_vs_30 <= -5:
+        score = _add_contrib(score, 12, "HRV is below your 30-day baseline.", why)
+    elif hrv_vs_30 is not None and hrv_vs_30 >= 5:
+        protective.append("HRV is above your recent baseline.")
+        score -= 5
     if rhr_delta is not None and rhr_delta > 5:
         score = _add_contrib(score, 8, "Resting HR increase suggests reduced recovery.", why)
+    if rhr_vs_30 is not None and rhr_vs_30 >= 4:
+        score = _add_contrib(score, 8, "Resting HR is above your 30-day baseline.", why)
+    elif rhr_vs_30 is not None and rhr_vs_30 <= -3:
+        protective.append("Resting HR is below your recent baseline.")
+        score -= 5
     if steps is not None and steps > 16000 and sleep is not None and sleep < 6.5:
         score = _add_contrib(score, 7, "High workload plus low sleep can increase burnout/overtraining risk.", why)
+    if recovery_score <= 35:
+        score = _add_contrib(score, 14, f"Recovery score is only {recovery_score:.0f}/100.", why)
+    elif recovery_score >= 70:
+        protective.append(f"Recovery score is {recovery_score:.0f}/100.")
+        score -= 8
     if "fatigue" in symptom_set or "poor sleep" in symptom_set:
         score = _add_contrib(score, 10, "Reported fatigue/poor sleep aligns with recovery risk.", why)
     prob = _probability_from_score(_clamp(score))
@@ -795,10 +1090,18 @@ def generate_risks(
         elif spo2 >= 97:
             protective.append(f"SpO2 {spo2:.0f}% is reassuring.")
             score -= 5
+    if spo2_vs_30 is not None and spo2_vs_30 <= -2:
+        score = _add_contrib(score, 10, "Oxygen saturation is below your 30-day baseline.", why)
     if rhr_delta is not None and rhr_delta > 6:
         score = _add_contrib(score, 8, "Resting HR rose sharply, which can precede illness.", why)
+    if rhr_vs_30 is not None and rhr_vs_30 >= 6:
+        score = _add_contrib(score, 6, "Resting HR is elevated versus your 30-day baseline.", why)
     if hrv_delta is not None and hrv_delta < -8:
         score = _add_contrib(score, 7, "HRV drop can be an early illness/stress signal.", why)
+    if hrv_vs_30 is not None and hrv_vs_30 <= -8:
+        score = _add_contrib(score, 6, "HRV is below your 30-day baseline.", why)
+    if temp_vs_30 is not None and temp_vs_30 >= 1.0:
+        score = _add_contrib(score, 7, "Temperature is above your 30-day baseline.", why)
     if {"cough", "shortness of breath", "fever"} & symptom_set:
         score = _add_contrib(score, 20, "Reported respiratory/infection symptoms increase short-term risk.", why)
     prob = _probability_from_score(_clamp(score))
@@ -825,12 +1128,16 @@ def generate_risks(
         score = _add_contrib(score, 20, "Heart failure history raises baseline decompensation risk.", why)
     if weight_delta is not None and weight_delta > 1.5:
         score = _add_contrib(score, 18, f"Weight trend increased by {weight_delta:.1f} kg vs prior week.", why)
+    if weight_vs_30 is not None and weight_vs_30 > 1.5:
+        score = _add_contrib(score, 12, "Weight is above your 30-day baseline.", why)
     if {"leg swelling", "shortness of breath"} & symptom_set:
         score = _add_contrib(score, 18, "Reported swelling/breathlessness can reflect fluid overload.", why)
     if rhr is not None and rhr > 95:
         score = _add_contrib(score, 6, "Elevated resting HR may accompany cardiac strain.", why)
     if steps is not None and steps < 3000:
         score = _add_contrib(score, 6, "Sharp reduction in activity can accompany worsening symptoms.", why)
+    if steps_vs_30 is not None and steps_vs_30 <= -2500:
+        score = _add_contrib(score, 5, "Activity has dropped well below your recent baseline.", why)
     if spo2 is not None and spo2 < 94:
         score = _add_contrib(score, 10, "Lower oxygen saturation increases concern for cardiopulmonary issues.", why)
     if weight_delta is not None and weight_delta < 0.5:
@@ -857,7 +1164,7 @@ def generate_risks(
     )
 
     risks.sort(key=lambda r: r.probability, reverse=True)
-    positives = _positive_behaviors(features, profile, symptoms)
+    positives = _positive_behaviors(summary, profile, symptoms)
     gaps = _data_gaps(summary, conditions)
     alerts = urgent_alerts(summary, symptoms)
     return risks, positives, gaps, alerts
@@ -894,6 +1201,7 @@ def build_summary_text(
     profile: dict[str, Any],
     symptoms: list[str],
     conditions: list[str],
+    summary: dict[str, Any],
     risks: list[RiskItem],
     positives: list[str],
     gaps: list[str],
@@ -922,6 +1230,15 @@ def build_summary_text(
         lines.append("Urgent flags:")
         for a in alerts:
             lines.append(f"- {a}")
+
+    recovery = summary.get("recovery") or {}
+    if recovery.get("score") is not None:
+        lines.append("")
+        lines.append(
+            f"Recovery score: {float(recovery['score']):.0f}/100 ({recovery.get('label', 'Watch')})."
+        )
+        for note in recovery.get("notes", [])[:2]:
+            lines.append(f"- {note}")
 
     lines.append("")
     lines.append("Predicted watchlist (next risk domains to monitor):")
@@ -957,7 +1274,7 @@ def simulate_what_if(
     symptoms: list[str],
     conditions: list[str],
     adjustments: dict[str, float],
-) -> list[RiskItem]:
+) -> tuple[list[RiskItem], dict[str, Any]]:
     # Clone the summary and adjust selected "latest" / "avg7" values to estimate directionality.
     sim_summary = {
         **summary,
@@ -971,6 +1288,11 @@ def simulate_what_if(
             entry["latest"] = float(entry["latest"]) + float(delta)
         if "avg7" in entry and entry["avg7"] is not None:
             entry["avg7"] = float(entry["avg7"]) + float(delta)
+        if "delta_vs_30" in entry and entry["delta_vs_30"] is not None:
+            entry["delta_vs_30"] = float(entry["delta_vs_30"]) + float(delta)
+        if "delta_vs_90" in entry and entry["delta_vs_90"] is not None:
+            entry["delta_vs_90"] = float(entry["delta_vs_90"]) + float(delta)
         sim_summary["features"][key] = entry
+    sim_summary["recovery"] = _recovery_summary_from_features(sim_summary["features"])
     sim_risks, _, _, _ = generate_risks(sim_summary, manual_inputs, profile, symptoms, conditions)
-    return sim_risks
+    return sim_risks, sim_summary
