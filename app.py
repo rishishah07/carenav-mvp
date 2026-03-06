@@ -15,6 +15,7 @@ from risk_engine import (
     generate_risks,
     load_health_file,
     merge_manual_inputs,
+    simulate_what_if,
     summarize_timeseries,
 )
 
@@ -201,6 +202,61 @@ def _inject_styles() -> None:
             font-weight: 650;
             color: #e5e7eb;
         }
+        .section-header-card {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            margin-top: 16px;
+            margin-bottom: 8px;
+        }
+        .section-icon-badge {
+            width: 28px;
+            height: 28px;
+            border-radius: 10px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            font-weight: 700;
+            line-height: 1;
+            margin-top: 1px;
+        }
+        .section-header-title {
+            color: #f8fafc;
+            font-size: 1.03rem;
+            font-weight: 680;
+            line-height: 1.25;
+        }
+        .section-header-sub {
+            color: #94a3b8;
+            font-size: 0.8rem;
+            margin-top: 1px;
+        }
+        .section-blue .section-icon-badge {
+            color: #dbeafe;
+            background: rgba(59, 130, 246, 0.16);
+            border: 1px solid rgba(59, 130, 246, 0.30);
+        }
+        .section-green .section-icon-badge {
+            color: #d1fae5;
+            background: rgba(16, 185, 129, 0.16);
+            border: 1px solid rgba(16, 185, 129, 0.28);
+        }
+        .section-cyan .section-icon-badge {
+            color: #cffafe;
+            background: rgba(14, 165, 233, 0.14);
+            border: 1px solid rgba(14, 165, 233, 0.28);
+        }
+        .section-purple .section-icon-badge {
+            color: #ede9fe;
+            background: rgba(99, 102, 241, 0.18);
+            border: 1px solid rgba(129, 140, 248, 0.30);
+        }
+        .section-divider {
+            height: 1px;
+            margin: 14px 0 10px 0;
+            background: linear-gradient(90deg, rgba(59, 130, 246, 0.00), rgba(59, 130, 246, 0.40), rgba(16, 185, 129, 0.00));
+        }
         .subtle-note {
             color: #94a3b8;
             font-size: 0.82rem;
@@ -248,7 +304,7 @@ def _inject_styles() -> None:
             border-radius: 20px;
             padding: 16px 18px;
             margin-top: 8px;
-            margin-bottom: 14px;
+            margin-bottom: 18px;
             box-shadow: 0 10px 30px rgba(2, 6, 23, 0.34);
             position: relative;
             overflow: hidden;
@@ -407,7 +463,7 @@ def _inject_styles() -> None:
             display: grid;
             grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 12px;
-            margin-bottom: 14px;
+            margin-bottom: 20px;
         }
         .stats-pill {
             background: rgba(15,23,42,0.60);
@@ -499,6 +555,30 @@ def _inject_styles() -> None:
             font-size: 0.95rem;
             line-height: 1.45;
         }
+        .sim-panel {
+            background:
+                radial-gradient(circle at 100% 0%, rgba(16, 185, 129, 0.10), transparent 34%),
+                linear-gradient(180deg, rgba(15,23,42,0.86), rgba(15,23,42,0.74));
+            border: 1px solid rgba(52, 211, 153, 0.16);
+            border-radius: 16px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+            box-shadow: 0 10px 22px rgba(2, 6, 23, 0.18);
+        }
+        .sim-title {
+            color: #d1fae5;
+            font-weight: 680;
+            margin-bottom: 3px;
+        }
+        .sim-subtle {
+            color: #94a3b8;
+            font-size: 0.82rem;
+        }
+        .sim-range {
+            color: #93c5fd;
+            font-size: 0.78rem;
+            margin-top: 4px;
+        }
         .snapshot-panel {
             background: rgba(15,23,42,0.52);
             border: 1px solid rgba(148, 163, 184, 0.10);
@@ -510,7 +590,8 @@ def _inject_styles() -> None:
             background:
                 radial-gradient(circle at 100% 0%, rgba(56, 189, 248, 0.12), transparent 34%),
                 linear-gradient(180deg, rgba(15,23,42,0.84), rgba(15,23,42,0.72));
-            border: 1px solid rgba(56, 189, 248, 0.16);
+            border: 1px solid rgba(56, 189, 248, 0.22);
+            border-left: 3px solid rgba(56, 189, 248, 0.78);
             border-radius: 16px;
             padding: 12px 14px;
             margin-bottom: 10px;
@@ -530,29 +611,157 @@ def _inject_styles() -> None:
             margin-top: 8px;
             margin-bottom: 6px;
         }
+        [data-testid="stExpander"] {
+            background: rgba(15,23,42,0.46);
+            border: 1px solid rgba(148, 163, 184, 0.12);
+            border-radius: 14px;
+            margin-top: 12px;
+        }
+        [data-testid="stExpander"] > details summary p {
+            color: #e2e8f0;
+            font-weight: 620;
+        }
         @media (max-width: 900px) {
+            .main .block-container {
+                padding-left: 0.85rem;
+                padding-right: 0.85rem;
+                padding-top: 0.8rem;
+            }
             .carenav-hero {
-                padding: 16px 16px;
-                min-height: 136px;
-            }
-            .hero-mark {
-                width: 50px;
-                height: 50px;
-                right: 16px;
-                top: 16px;
-                font-size: 1.6rem;
-            }
-            .status-panel {
                 padding: 14px 14px;
+                min-height: 126px;
                 border-radius: 18px;
             }
+            .carenav-hero h1 { font-size: 1.62rem; }
+            .carenav-hero p {
+                font-size: 0.88rem;
+                line-height: 1.35;
+                max-width: none;
+            }
+            .hero-kicker {
+                font-size: 0.74rem;
+                padding: 5px 10px;
+                margin-bottom: 8px;
+            }
+            .hero-mark {
+                width: 44px;
+                height: 44px;
+                right: 14px;
+                top: 14px;
+                font-size: 1.35rem;
+                border-radius: 13px;
+            }
+            .results-header {
+                margin-top: 6px;
+                margin-bottom: 8px;
+                gap: 8px;
+            }
+            .results-title { font-size: 1.0rem; }
+            .results-subtle { font-size: 0.78rem; }
+            .info-chip {
+                font-size: 0.73rem;
+                padding: 5px 9px;
+            }
+            .status-panel {
+                padding: 12px 12px;
+                border-radius: 16px;
+                margin-bottom: 14px;
+            }
+            .status-title { font-size: 1.02rem; }
+            .status-caption { font-size: 0.8rem; }
+            .focus-label { font-size: 0.72rem; }
+            .focus-value { font-size: 0.92rem; }
+            .section-header-card {
+                margin-top: 12px;
+                margin-bottom: 7px;
+                gap: 8px;
+            }
+            .section-icon-badge {
+                width: 24px;
+                height: 24px;
+                border-radius: 8px;
+                font-size: 0.78rem;
+            }
+            .section-header-title { font-size: 0.96rem; }
+            .section-header-sub { font-size: 0.76rem; }
+            .section-divider { margin: 12px 0 8px 0; }
             .stats-strip {
                 grid-template-columns: 1fr;
-                gap: 10px;
+                gap: 8px;
+                margin-bottom: 14px;
             }
+            .stats-pill {
+                padding: 9px 10px;
+                border-radius: 12px;
+            }
+            .stats-label { font-size: 0.68rem; }
+            .stats-value { font-size: 0.95rem; }
+            .stats-sub { font-size: 0.72rem; }
             .action-card {
-                min-height: 118px;
-                padding: 12px 13px;
+                min-height: 104px;
+                padding: 10px 11px;
+                border-radius: 14px;
+            }
+            .action-step {
+                width: 28px;
+                height: 28px;
+                font-size: 0.76rem;
+                margin-bottom: 7px;
+            }
+            .action-title {
+                font-size: 0.74rem;
+                margin-bottom: 4px;
+            }
+            .action-body {
+                font-size: 0.86rem;
+                line-height: 1.36;
+            }
+            .sim-panel {
+                padding: 10px 11px;
+                border-radius: 14px;
+                margin-bottom: 8px;
+            }
+            .sim-title { font-size: 0.92rem; }
+            .sim-subtle { font-size: 0.76rem; }
+            .sim-range { font-size: 0.72rem; }
+            .ask-banner {
+                padding: 10px 11px;
+                border-radius: 14px;
+                margin-bottom: 8px;
+            }
+            .quick-prompt-note {
+                font-size: 0.74rem;
+                margin-top: 6px;
+                margin-bottom: 5px;
+            }
+            .snapshot-panel {
+                padding: 9px 10px;
+                border-radius: 12px;
+            }
+            .legend-wrap {
+                justify-content: flex-start;
+                gap: 6px;
+            }
+            .legend-chip {
+                font-size: 0.72rem;
+                padding: 4px 8px;
+            }
+            [data-testid="stExpander"] {
+                margin-top: 10px;
+                border-radius: 12px;
+            }
+            .stButton button[kind="primary"] {
+                min-height: 42px;
+                font-size: 0.93rem;
+            }
+            .stButton button[kind="secondary"] {
+                min-height: 40px;
+                font-size: 0.84rem;
+                padding-top: 0.32rem;
+                padding-bottom: 0.32rem;
+            }
+            .stTextInput input, .stTextArea textarea, .stSelectbox div[data-baseweb=\"select\"] > div {
+                font-size: 16px;
             }
         }
         </style>
@@ -643,7 +852,13 @@ def _build_ai_payload(
             metrics[key] = {
                 "latest": item.get("latest"),
                 "avg7": item.get("avg7"),
+                "avg30": item.get("avg30"),
+                "avg90": item.get("avg90"),
                 "trend_delta": item.get("trend_delta"),
+                "delta_vs_30": item.get("delta_vs_30"),
+                "delta_vs_90": item.get("delta_vs_90"),
+                "zscore_30": item.get("zscore_30"),
+                "sudden_shift_30": item.get("sudden_shift_30"),
                 "count": item.get("count"),
             }
         elif manual_inputs.get(key) is not None:
@@ -665,6 +880,7 @@ def _build_ai_payload(
             "freshness_days": summary.get("freshness_days"),
             "metrics": metrics,
         },
+        "recovery_signal": summary.get("recovery"),
         "predicted_risks": [
             {
                 "risk_domain": r.name,
@@ -1035,6 +1251,166 @@ def _render_action_cards(actions: list[str]) -> None:
             )
 
 
+def _section_header(title: str, subtitle: str = "", icon: str = "◈", tone: str = "blue") -> None:
+    st.markdown(
+        f"""
+        <div class="section-header-card section-{tone}">
+          <div class="section-icon-badge">{html.escape(icon)}</div>
+          <div>
+            <div class="section-header-title">{html.escape(title)}</div>
+            <div class="section-header-sub">{html.escape(subtitle)}</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _simulator_action_catalog() -> list[dict[str, Any]]:
+    return [
+        {
+            "label": "Sleep +45 min/night",
+            "description": "Improve sleep duration and consistency for the next 7 days.",
+            "adjustments": {"sleep_hours": 0.75, "hrv": 3.0, "resting_hr": -2.0},
+        },
+        {
+            "label": "Walk +2,000 steps/day",
+            "description": "Add one or two extra walks daily to raise baseline movement.",
+            "adjustments": {"steps": 2000.0, "resting_hr": -1.0, "glucose_fasting": -4.0},
+        },
+        {
+            "label": "Recovery week",
+            "description": "Lower training strain while prioritizing sleep and hydration.",
+            "adjustments": {"sleep_hours": 0.5, "hrv": 5.0, "resting_hr": -3.0, "temperature_f": -0.2},
+        },
+        {
+            "label": "Post-meal 15 min walks",
+            "description": "Short walks after meals to improve metabolic stability.",
+            "adjustments": {"steps": 1200.0, "glucose_fasting": -6.0, "resting_hr": -0.8},
+        },
+        {
+            "label": "No late alcohol/caffeine",
+            "description": "Avoid late stimulants and alcohol to improve overnight recovery.",
+            "adjustments": {"sleep_hours": 0.4, "hrv": 2.0, "resting_hr": -1.0},
+        },
+    ]
+
+
+def _available_sim_actions(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    catalog = _simulator_action_catalog()
+    features = summary.get("features", {})
+    available_metrics = {k for k, v in features.items() if v.get("latest") is not None}
+    if not available_metrics:
+        return catalog[:3]
+
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for action in catalog:
+        overlap = len(available_metrics & set(action["adjustments"].keys()))
+        scored.append((overlap, action))
+    scored.sort(key=lambda x: (x[0], len(x[1]["adjustments"])), reverse=True)
+    filtered = [action for overlap, action in scored if overlap > 0]
+    return filtered[:5] if filtered else catalog[:3]
+
+
+def _fmt_signed(value: float | None, suffix: str = "") -> str:
+    if value is None:
+        return "N/A"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value:.1f}{suffix}"
+
+
+def _fmt_delta_range(value: float | None, suffix: str = "") -> str:
+    if value is None:
+        return "Range unavailable"
+    lo = value * 0.7
+    hi = value * 1.3
+    lo_v = min(lo, hi)
+    hi_v = max(lo, hi)
+    lo_sign = "+" if lo_v > 0 else ""
+    hi_sign = "+" if hi_v > 0 else ""
+    return f"Expected range: {lo_sign}{lo_v:.1f}{suffix} to {hi_sign}{hi_v:.1f}{suffix}"
+
+
+def _simulate_week_impact(result: dict[str, Any], adjustments: dict[str, float]) -> dict[str, Any]:
+    summary = result.get("summary", {})
+    risks = result.get("risks", [])
+    manual_inputs = result.get("manual_inputs", {})
+    profile = result.get("profile", {})
+    symptoms = result.get("symptoms", [])
+    conditions = result.get("conditions", [])
+
+    sim_risks, sim_summary = simulate_what_if(
+        summary=summary,
+        manual_inputs=manual_inputs,
+        profile=profile,
+        symptoms=symptoms,
+        conditions=conditions,
+        adjustments=adjustments,
+    )
+
+    top_now = risks[0] if risks else None
+    sim_map = {r.name: r for r in sim_risks}
+    top_after = sim_map.get(top_now.name) if top_now else (sim_risks[0] if sim_risks else None)
+    top_delta = None
+    if top_now and top_after:
+        top_delta = float(top_after.probability - top_now.probability)
+
+    base_load = sum(r.probability for r in risks[:3]) / max(1, len(risks[:3]))
+    sim_load = sum(r.probability for r in sim_risks[:3]) / max(1, len(sim_risks[:3]))
+    load_delta = float(sim_load - base_load) if sim_risks else None
+
+    base_recovery = summary.get("recovery", {}).get("score")
+    sim_recovery = sim_summary.get("recovery", {}).get("score")
+    recovery_delta = None
+    if base_recovery is not None and sim_recovery is not None:
+        recovery_delta = float(sim_recovery) - float(base_recovery)
+
+    feature_changes: list[tuple[str, float]] = []
+    feature_map = summary.get("features", {})
+    sim_feature_map = sim_summary.get("features", {})
+    for metric in adjustments:
+        before = feature_map.get(metric, {}).get("latest")
+        after = sim_feature_map.get(metric, {}).get("latest")
+        if before is None or after is None:
+            continue
+        delta = float(after) - float(before)
+        if abs(delta) < 1e-6:
+            continue
+        feature_changes.append((metric, delta))
+    feature_changes = sorted(feature_changes, key=lambda x: abs(x[1]), reverse=True)[:3]
+
+    impact_score = 50.0
+    if top_delta is not None:
+        impact_score += max(0.0, -top_delta * 2.8)
+        impact_score -= max(0.0, top_delta * 2.2)
+    if load_delta is not None:
+        impact_score += max(0.0, -load_delta * 2.0)
+        impact_score -= max(0.0, load_delta * 1.8)
+    if recovery_delta is not None:
+        impact_score += max(0.0, recovery_delta * 2.2)
+        impact_score -= max(0.0, -recovery_delta * 1.8)
+    impact_score = max(0.0, min(100.0, impact_score))
+    if impact_score >= 75:
+        impact_band = "High projected impact"
+    elif impact_score >= 55:
+        impact_band = "Moderate projected impact"
+    else:
+        impact_band = "Low projected impact"
+
+    return {
+        "sim_risks": sim_risks,
+        "sim_summary": sim_summary,
+        "top_now": top_now,
+        "top_after": top_after,
+        "top_delta": top_delta,
+        "load_delta": load_delta,
+        "recovery_delta": recovery_delta,
+        "feature_changes": feature_changes,
+        "impact_score": impact_score,
+        "impact_band": impact_band,
+    }
+
+
 def _status_from_risk(risks: list[Any], alerts: list[str], confidence: float) -> dict[str, str]:
     if alerts:
         return {
@@ -1227,11 +1603,15 @@ def _run_analysis(
     if not ai_text:
         ai_text = _fallback_analysis(risks, positives, gaps, alerts)
 
-    summary_text = build_summary_text(profile, symptoms, conditions, risks, positives, gaps, alerts)
+    summary_text = build_summary_text(profile, symptoms, conditions, summary, risks, positives, gaps, alerts)
     return {
         "ts_df": ts_df,
         "upload_error": upload_error,
         "summary": summary,
+        "profile": profile,
+        "manual_inputs": manual_inputs,
+        "symptoms": symptoms,
+        "conditions": conditions,
         "risks": risks,
         "positives": positives,
         "gaps": gaps,
@@ -1552,6 +1932,14 @@ def main() -> None:
     window_label = f"{summary.get('n_days', 0)} tracked days"
     freshness = summary.get("freshness_days")
     freshness_text = "Current" if freshness in (None, 0) else f"{freshness} day(s) old"
+    recovery = summary.get("recovery") or {}
+    recovery_score = recovery.get("score")
+    recovery_label = str(recovery.get("label", "Watch"))
+    recovery_tone = "green" if recovery_label == "Recovered" else "yellow" if recovery_label == "Watch" else "red"
+    third_tone = recovery_tone if recovery_score is not None else status["color"]
+    third_label = "Recovery score" if recovery_score is not None else "Data window"
+    third_value = f"{float(recovery_score):.0f}/100" if recovery_score is not None else window_label
+    third_sub = recovery_label if recovery_score is not None else freshness_text
     st.markdown(
         f"""
         <div class="stats-strip">
@@ -1565,24 +1953,35 @@ def main() -> None:
             <div class="stats-value">{html.escape(check_in)}</div>
             <div class="stats-sub">Suggested cadence</div>
           </div>
-          <div class="stats-pill {status["color"]}">
-            <div class="stats-label">Data window</div>
-            <div class="stats-value">{html.escape(window_label)}</div>
-            <div class="stats-sub">{html.escape(freshness_text)}</div>
+          <div class="stats-pill {third_tone}">
+            <div class="stats-label">{html.escape(third_label)}</div>
+            <div class="stats-value">{html.escape(third_value)}</div>
+            <div class="stats-sub">{html.escape(third_sub)}</div>
           </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("### Top Risk Explanation")
+    _section_header(
+        title="Top Risk Explanation",
+        subtitle="Plain-language view of your highest current risk signal.",
+        icon="◉",
+        tone="blue",
+    )
     if ai_error and _get_api_key():
         st.warning(f"ChatGPT analysis failed, showing local summary instead. Error: {ai_error}")
     elif ai_error and "No OpenAI API key" in ai_error:
         st.info("ChatGPT key not configured. Showing local summary.")
     st.markdown(ai_text)
 
-    st.markdown("### What To Do Next")
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    _section_header(
+        title="What To Do Next",
+        subtitle="Focused action plan for the next 7 days.",
+        icon="▣",
+        tone="cyan",
+    )
     if ai_actions_error and _get_api_key():
         st.caption("AI action guidance is unavailable right now. Showing local fallback suggestions.")
     if primary_actions:
@@ -1590,11 +1989,78 @@ def main() -> None:
     else:
         _render_action_cards(["Keep healthy routines consistent and rerun after new readings are available."])
 
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    _section_header(
+        title="1-Week Impact Simulator",
+        subtitle="Estimate how one positive habit may shift risk and recovery.",
+        icon="◆",
+        tone="green",
+    )
+    st.markdown(
+        """
+        <div class="sim-panel">
+          <div class="sim-title">Simulate one positive action for the next 7 days</div>
+          <div class="sim-subtle">Pick one habit and preview how much it may reduce risk and improve recovery. This is an estimate, not a diagnosis.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    sim_actions = _available_sim_actions(summary)
+    sim_labels = [a["label"] for a in sim_actions]
+    sim_selected_label = st.selectbox(
+        "Action to simulate",
+        sim_labels,
+        index=0 if sim_labels else None,
+        key="sim_action_select",
+    )
+    selected_action = next((a for a in sim_actions if a["label"] == sim_selected_label), None)
+    if selected_action:
+        st.caption(selected_action["description"])
+        sim_outcome = _simulate_week_impact(result, selected_action["adjustments"])
+
+        sim_top_delta = sim_outcome.get("top_delta")
+        sim_recovery_delta = sim_outcome.get("recovery_delta")
+        sim_load_delta = sim_outcome.get("load_delta")
+        sim_score = float(sim_outcome.get("impact_score", 0.0))
+        sim_band = str(sim_outcome.get("impact_band", "Projected impact"))
+
+        s1, s2, s3 = st.columns(3)
+        with s1:
+            delta_display = _fmt_signed(-sim_top_delta if sim_top_delta is not None else None, " pts")
+            st.metric("Top risk reduction", delta_display)
+            st.markdown(f'<div class="sim-range">{_fmt_delta_range(-sim_top_delta if sim_top_delta is not None else None, " pts")}</div>', unsafe_allow_html=True)
+        with s2:
+            st.metric("Recovery score change", _fmt_signed(sim_recovery_delta, " pts"))
+            st.markdown(f'<div class="sim-range">{_fmt_delta_range(sim_recovery_delta, " pts")}</div>', unsafe_allow_html=True)
+        with s3:
+            delta_display = _fmt_signed(-sim_load_delta if sim_load_delta is not None else None, " pts")
+            st.metric("Overall risk load", delta_display)
+            st.markdown(f'<div class="sim-range">{_fmt_delta_range(-sim_load_delta if sim_load_delta is not None else None, " pts")}</div>', unsafe_allow_html=True)
+
+        st.progress(sim_score / 100.0, text=f"Impact score: {sim_score:.0f}/100 · {sim_band}")
+
+        feature_changes = sim_outcome.get("feature_changes", [])
+        if feature_changes:
+            lines = []
+            for metric, delta in feature_changes:
+                unit = " h" if metric == "sleep_hours" else ""
+                lines.append(f"- **{metric.replace('_', ' ')}:** {_fmt_signed(delta, unit)}")
+            st.markdown("Likely metric shifts")
+            st.markdown("\n".join(lines))
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    _section_header(
+        title="Ask CareNav AI",
+        subtitle="Interactive Q&A based on your results and trends.",
+        icon="✦",
+        tone="purple",
+    )
     with st.container(border=True):
         st.markdown(
             """
             <div class="ask-banner">
-              <div class="ai-search-title">Ask CareNav AI</div>
+              <div class="ai-search-title">AI Follow-up</div>
               <div class="results-subtle">Use this for quick follow-up questions about your results, trends, and practical next steps.</div>
             </div>
             """,
@@ -1663,7 +2129,7 @@ def main() -> None:
                 st.caption(f"Question: {search_question_last}")
             st.markdown(search_answer)
 
-    with st.expander("Signals Snapshot"):
+    with st.expander("◌ Signals Snapshot"):
         chips = "".join(
             [
                 f'<span class="pill {_severity_class(r.severity)}">{html.escape(r.name)}: {r.probability:.0f}%</span>'
@@ -1672,7 +2138,7 @@ def main() -> None:
         )
         st.markdown(f'<div class="snapshot-panel">{chips}</div>', unsafe_allow_html=True)
 
-    with st.expander("More Detail"):
+    with st.expander("◌ More Detail"):
         for r in risks[:3]:
             st.markdown(f"#### {r.name}")
             d1, d2, d3, d4 = st.columns(4)
@@ -1694,7 +2160,7 @@ def main() -> None:
                     st.write(f"- {line}")
             st.divider()
 
-    with st.expander("Trend Data (Uploaded File)"):
+    with st.expander("◌ Trend Data (Uploaded File)"):
         if ts_df is None or ts_df.empty:
             st.caption("No file uploaded. Analysis used manual inputs only.")
         else:
@@ -1778,7 +2244,7 @@ def main() -> None:
                         st.caption("Monthly averages.")
             st.dataframe(ts_df.tail(14), use_container_width=True, hide_index=True)
 
-    with st.expander("Care Team Summary / Export"):
+    with st.expander("◌ Care Team Summary / Export"):
         st.text_area("Summary text", value=summary_text, height=320)
         st.download_button(
             "Download summary (.txt)",
